@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "arkade-serverless-delegate",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // R2 task store. With no bucket id, `wrangler deploy` auto-provisions it —
+  // part of the (near) one-click story.
+  "r2_buckets": [{ "binding": "DELEGATES", "bucket_name": "arkade-delegate-tasks" }],
+
+  // Per-tenant serialization point for dispatch (docs/DESIGN.md §8.1).
+  "durable_objects": {
+    "bindings": [{ "name": "RUNNER", "class_name": "DelegateRunner" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DelegateRunner"] }],
+
+  // Coarse backstop sweep; precise per-task timing comes from DO alarms (Phase 4).
+  "triggers": { "crons": ["*/5 * * * *"] },
+
+  "vars": { "ARK_SERVER_URL": "https://ark.example.com" }
+  // Secret (not in config): `wrangler secret put API_KEYS`  (JSON apiKey->tenantId)
+}

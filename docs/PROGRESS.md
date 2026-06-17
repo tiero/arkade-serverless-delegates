@@ -39,8 +39,14 @@ Contract pieces, each with component tests in `test/` (25 tests green):
       maxAttempts) then dispatches due tasks via the runner — `src/scheduler/cron.ts`
       (`cron.test.ts`). Level-triggered (re-derives from state each tick) →
       resilient to missed crons; tenant-scoped.
-- [ ] `wrangler.jsonc` + Worker entry (`fetch` + `scheduled`) + R2/DO bindings
-      (config only; not deployed from here).
+- [x] `wrangler.jsonc` + Worker entry (`fetch` + `scheduled`) + R2 store +
+      `DelegateRunner` DO (per-tenant serialization, DESIGN §8.1) + `RestArkClient`
+      stub — `src/index.ts`, `src/runner/DelegateRunner.ts`, `src/store/r2.ts`,
+      `src/ark/rest.ts`, `wrangler.jsonc`. R2 store covered by `r2-store.test.ts`;
+      the DO + deploy are config/code, not runtime-verified here.
+
+**Phase 1 is complete: 58 component tests green. Settlement (RestArkClient) is
+the one remaining seam and is BLOCKED on a live arkd — see Phase 3.**
 
 ## Phase 2 — SDK spike (go/no-go)  ← likely BLOCKED here
 - [ ] [BLOCKED] Validate `@arkade-os/sdk` imports + runs under `workerd`
@@ -54,8 +60,12 @@ Contract pieces, each with component tests in `test/` (25 tests green):
       regtest stack. *Needs:* the Arkade regtest stack + outbound network.
 
 ## Phase 4 — Hardening
-- [ ] DO alarms (precise scheduling), retry/backoff policy, status indexes,
-      strict overlap lock (per-tenant DO), quotas, observability.
+- [ ] DO alarms for precise per-task scheduling (backstop: the cron sweep).
+- [ ] Persist hard expiry (`expiresAt`) + escalate tasks near expiry — closes
+      the missed-cron safety gap (DESIGN §8.1).
+- [ ] Idempotent `RegisterIntent` (dedupe by intent txid) — DESIGN §8.1 layer 3.
+- [ ] Runtime-verify the DO serialization under miniflare; status indexes for
+      large tenants; strict overlap lock; per-tenant quotas; observability.
 
 ## Phase 5 — One-click deploy
 - [ ] "Deploy to Cloudflare" button; deploy docs; optional container variant.

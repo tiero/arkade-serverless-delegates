@@ -328,6 +328,45 @@ fee, ensure `validAt` is in the future and before the inputs' expiry.
 6. **Delegate key custody.** The operator's signing key is a Worker Secret.
    Document threat model; consider per-tenant keys or HSM/KMS later.
 
+## 8.1 Concurrency, idempotency & missed triggers
+
+Two failure modes deserve explicit answers (both raised in review).
+
+**Missed cron ticks.** Cloudflare Cron Triggers are best-effort and are *not*
+backfilled — a missed tick is skipped, never replayed. We never depend on a tick
+firing. The sweep is **level-triggered**: every run recomputes what is due
+directly from persisted state (`selectDueTasks` = `pending && scheduledAt ≤ now`).
+A task therefore survives any number of missed ticks and is picked up by the next
+successful one (test: *missed-cron resilience* in `cron.test.ts`). Safeguards:
+- **DO alarms** are the precise primary trigger; cron is the backstop. Either
+  alone suffices; together they cover each other.
+- A **safety margin**: `scheduledAt` is set well before the VTXO's hard expiry
+  (target ≈ 90 % of lifetime, matching the SDK's auto-settle), so a late sweep
+  still beats expiry.
+- *Open gap:* we don't yet persist the hard expiry (`expiresAt`) alongside
+  `scheduledAt`, so the sweep can't yet escalate a task dangerously close to
+  expiry. Tracked in Phase 4.
+
+**Repeated / concurrent triggers on one delegation.** Three layers, weakest to
+strongest:
+1. **Status guard (implemented).** `runDelegate` acts only on a `pending` task
+   and immediately moves it to `registering`; any later trigger sees a
+   non-`pending` task and no-ops. This makes *sequential* repeats safe — cron
+   firing twice, or cron + a DO alarm back-to-back, renews exactly once (test:
+   *sequential triggers*, ark called once).
+2. **Serialization via a Durable Object (the real fix).** The status guard is
+   read-then-write, and **R2 has no atomic compare-and-swap**, so two *parallel*
+   isolates could both read `pending`. The fix (§4): route a tenant's dispatch
+   through a single `DelegateRunner` Durable Object (`id = idFromName(tenantId)`).
+   A DO is single-threaded, so cron and alarms *signal* the DO rather than run
+   the round themselves, and it serializes all work for that tenant — one
+   delegation at a time. Implemented in `src/runner/DelegateRunner.ts` (serial
+   queue); runtime verification under miniflare is Phase 4.
+3. **Idempotent registration (defense in depth).** `RegisterIntent` against arkd
+   must be deduped by intent `txid` (as Fulmine does via its registered-intents
+   map), so even a double-submit cannot double-renew. The cross-task **overlap
+   guard** (§5) already stops two *different* tasks from racing on the same VTXOs.
+
 ---
 
 ## 9. Security & trust model
@@ -370,7 +409,7 @@ fee, ensure `validAt` is in the future and before the inputs' expiry.
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DelegateRunner"] }],
 
-  "triggers": { "crons": ["* * * * *"] },
+  "triggers": { "crons": ["*/5 * * * *"] },
 
   "vars": { "ARK_SERVER_URL": "https://ark.example.com" }
   // secrets (wrangler secret put): DELEGATE_PRIVATE_KEY, API_KEYS

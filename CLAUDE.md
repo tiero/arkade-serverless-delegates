@@ -54,6 +54,9 @@ Take **one contract piece per iteration**; keep diffs small and reviewable.
   miniflare come in a later, clearly-separated phase.)
 - TS source uses explicit `.ts` import extensions and `import type {…}` for
   type-only imports (required by Node type-stripping + `verbatimModuleSyntax`).
+  Type-stripping is **strip-only**: no constructs that need code generation —
+  no `enum`, no `namespace`, no constructor **parameter properties**
+  (`constructor(private x)`); declare fields explicitly instead.
 
 ## Git
 

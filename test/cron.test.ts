@@ -80,4 +80,31 @@ describe("runSweep", () => {
     await runSweep(store, new MockArkClient(), "t_a", NOW);
     assert.equal((await store.get("t_b", "b"))?.status, "pending");
   });
+
+  // --- Missed crons & repeated triggers (docs/DESIGN.md §8.1) ---
+
+  it("dispatches a long-overdue task on the next sweep (missed-cron resilience)", async () => {
+    // No cron fired for a day; the task is still pending with a past scheduledAt.
+    const store = new InMemoryDelegateStore();
+    await store.put(
+      makeRecord({ id: "overdue", tenantId: "t_a", status: "pending", scheduledAt: NOW - 86_400 }),
+    );
+    const summary = await runSweep(store, new MockArkClient(), "t_a", NOW);
+    assert.equal(summary.completed, 1);
+    assert.equal((await store.get("t_a", "overdue"))?.status, "completed");
+  });
+
+  it("does not double-process a delegation across repeated sweeps (sequential triggers)", async () => {
+    // Two cron ticks (or a cron + a DO alarm) over the same task: the status
+    // guard means only the first renews it; the second is a no-op.
+    const store = new InMemoryDelegateStore();
+    await store.put(
+      makeRecord({ id: "due", tenantId: "t_a", status: "pending", scheduledAt: NOW - 1 }),
+    );
+    const ark = new MockArkClient();
+    await runSweep(store, ark, "t_a", NOW);
+    await runSweep(store, ark, "t_a", NOW + 1);
+    assert.equal(ark.calls.length, 1); // renewed exactly once
+    assert.equal((await store.get("t_a", "due"))?.attempts, 1);
+  });
 });
