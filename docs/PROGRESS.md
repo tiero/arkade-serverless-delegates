@@ -35,8 +35,10 @@ Contract pieces, each with component tests in `test/` (25 tests green):
       verbatim), idempotent on non-pending, failure records reason, retry
       accumulates `attempts`. Synthesis: added `attempts` to the record +
       DESIGN §5.
-- [ ] **Cron sweep wiring** — sweep selects due + stuck, dispatches to runner,
-      persists results. End-to-end test on the in-memory store + mock ark.
+- [x] **Cron sweep wiring** — `runSweep` recovers stuck/failed (bounded by
+      maxAttempts) then dispatches due tasks via the runner — `src/scheduler/cron.ts`
+      (`cron.test.ts`). Level-triggered (re-derives from state each tick) →
+      resilient to missed crons; tenant-scoped.
 - [ ] `wrangler.jsonc` + Worker entry (`fetch` + `scheduled`) + R2/DO bindings
       (config only; not deployed from here).
 
