@@ -1,0 +1,51 @@
+# Arkade Serverless Delegate
+
+A serverless, multi-tenant **Arkade delegate** — a hosted service that keeps
+users' [VTXOs](https://docs.arkadeos.com/learn/core-concepts/vtxo-lifecycle-and-liveness)
+alive by **renewing them before they expire, without ever taking custody** — and
+deploys to **Cloudflare** with (near) one click.
+
+> **Status: design phase.** This repo currently contains the design only. See
+> **[`docs/DESIGN.md`](docs/DESIGN.md)**. Implementation follows once the design
+> is approved.
+
+## Why
+
+Arkade VTXOs expire and must be periodically *renewed* to preserve unilateral
+exit rights. That puts a **liveness burden** on users: be online on a schedule,
+or risk your funds being swept (recoverable, but you lose unilateral control).
+
+A **delegate** removes that burden. The user hands over a pre-signed **intent**
+plus pre-signed **forfeit transactions** that authorize *only* "renew my VTXO
+into a fresh VTXO that is still mine (minus a fee)". The delegate submits them
+just before expiry. **Funds are safe by construction** — a faulty or malicious
+delegate can fail to renew, but it can never redirect funds.
+
+This is the serverless analogue of the delegate built into
+[Fulmine](https://github.com/ArkLabsHQ/fulmine) (Go), rebuilt on the
+[Arkade TypeScript SDK](https://github.com/arkade-os/ts-sdk).
+
+## Shape
+
+- **TypeScript** on **Cloudflare Workers + Durable Objects** (no container needed —
+  the SDK speaks REST + SSE, which the Workers runtime supports)
+- **R2** as the task store
+- **Cron Triggers** + Durable Object alarms as the scheduler
+- **Multi-tenant**: one delegate operator, many users' intents, bearer-key auth
+
+```
+user ──POST signed intent + forfeits──▶ API Worker ──▶ R2 (tasks)
+                                            │
+              Cron sweep / DO alarm ────────┘──▶ DelegateRunner (DO)
+                                                   └─REST+SSE─▶ arkd  (settlement round)
+```
+
+See **[`docs/DESIGN.md`](docs/DESIGN.md)** for the full architecture, data model,
+API, trust model, risks, and a phased roadmap.
+
+## References
+
+- Arkade docs: [VTXO lifecycle & liveness](https://docs.arkadeos.com/learn/core-concepts/vtxo-lifecycle-and-liveness),
+  [Intent delegation](https://docs.arkadeos.com/arkd/components/intent-delegation)
+- [Fulmine](https://github.com/ArkLabsHQ/fulmine) — Go delegate reference
+- [Arkade TS SDK](https://github.com/arkade-os/ts-sdk) · [demos](https://github.com/arkade-os/demos)
