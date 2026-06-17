@@ -25,9 +25,10 @@ Contract pieces, each with component tests in `test/` (25 tests green):
       validate + overlap guard + store — `src/core/service.ts` (`service.test.ts`).
       Antithesis: stores intent verbatim (custody test), 409 on overlap, cancel
       only for `pending`, tenant-scoped 404s.
-- [ ] **API router** — `POST/GET/DELETE /v1/delegates`, `GET /v1/health`;
-      bearer-key → tenantId. Test routing + auth + error shapes (no Workers
-      runtime needed: test the handler over `Request`/`Response`).
+- [x] **API router** — `POST/GET/DELETE /v1/delegates`, `GET /v1/health`,
+      bearer-key → tenantId — `src/api/router.ts` (`router.test.ts`).
+      Antithesis: 401 unauth, 400 bad JSON, cross-tenant access → 404 (no
+      existence leak), 405/404 for bad method/route.
 - [ ] **Runner core (mock)** — pure orchestration: pending → registering →
       in_round → completed via `ArkClient`, with retry/backoff and status
       transitions. Test against `MockArkClient` (incl. `failTimes`).
