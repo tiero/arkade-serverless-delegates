@@ -43,7 +43,7 @@ small and focused on this piece.
    - add or strengthen **component tests** that pin the resolved behaviour.
 
 **4. Prove + record.**
-   - `npm test` must be green. **Never commit on red.**
+   - `pnpm test` must be green. **Never commit on red.**
    - Update `docs/PROGRESS.md` (check the item, note follow-ups / new BLOCKED).
    - Commit small with the standard footer; push to the working branch.
 

@@ -10,6 +10,12 @@ A serverless, multi-tenant **Arkade delegate** that renews users' VTXOs before
 expiry **without taking custody** — TypeScript on Cloudflare Workers + Durable
 Objects + R2 + Cron. The end goal and roadmap live in `docs/DESIGN.md` §12.
 
+Code is layered (DDD): `src/domain` (pure model, owns invariants) ←
+`src/application` (use cases + ports) ← `src/infrastructure` (adapters).
+Dependencies point inward; keep I/O and Cloudflare specifics in infrastructure.
+Use **Arkade** (not "Ark") in our own names/prose; `arkd` is the server daemon's
+real name and stays as-is.
+
 ## Invariants — never violate these
 
 1. **No custody.** The delegate only ever stores pre-signed intents + forfeit
@@ -20,8 +26,8 @@ Objects + R2 + Cron. The end goal and roadmap live in `docs/DESIGN.md` §12.
 2. **Tenant isolation.** Every store/API operation is scoped by `tenantId`.
    Never read or list across tenants. Auth is bearer-key → `tenantId`.
 3. **Reject ambiguous hand-offs.** One forfeit tx per input; no overlapping
-   inputs with an active task; renewal time in the future. See
-   `src/api/validate.ts`.
+   inputs with an active task; renewal time in the future. Enforced by the
+   value-object parsers in `src/domain/task.ts`.
 4. **Don't log secrets or amounts.** The operator signing key is a Worker
    Secret. Treat balances/timing as private.
 
@@ -46,7 +52,7 @@ Take **one contract piece per iteration**; keep diffs small and reviewable.
 ## Testing — non-negotiable
 
 - Every contract piece has **component tests** in `test/`.
-- Run `npm test` before every commit. **Never commit on red.**
+- Use **pnpm**. Run `pnpm test` before every commit. **Never commit on red.**
 - Tests are **dependency-light**: Node's built-in runner with type-stripping
   (`node --test --experimental-strip-types`). **Do not** introduce test deps
   that need network installs or the Workers runtime for *unit/contract* tests —

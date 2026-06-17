@@ -5,11 +5,12 @@ users' [VTXOs](https://docs.arkadeos.com/learn/core-concepts/vtxo-lifecycle-and-
 alive by **renewing them before they expire, without ever taking custody** — and
 deploys to **Cloudflare** with (near) one click.
 
-> **Status: Phase 1 (skeleton).** The design is in
-> **[`docs/DESIGN.md`](docs/DESIGN.md)**; the contract pieces (data model,
-> hand-off validation, task store, ArkClient seam + mock, cron sweep) are
-> implemented in `src/` with component tests in `test/`. Build proceeds via a
-> guardrailed dialectical loop — see [`CLAUDE.md`](CLAUDE.md),
+> **Status: Phase 1 (skeleton), DDD-layered.** The design is in
+> **[`docs/DESIGN.md`](docs/DESIGN.md)**. Code is layered `domain` →
+> `application` → `infrastructure` (the `DelegateTask` aggregate owns the
+> lifecycle; use cases depend on `Clock`/`DelegateRepository`/`ArkadeClient`
+> ports; adapters are R2/in-memory/Cloudflare/mock). Component tests in `test/`.
+> Build proceeds via a guardrailed dialectical loop — see [`CLAUDE.md`](CLAUDE.md),
 > [`docs/WORKFLOW.md`](docs/WORKFLOW.md), and live state in
 > [`docs/PROGRESS.md`](docs/PROGRESS.md).
 
@@ -50,14 +51,15 @@ API, trust model, risks, and a phased roadmap.
 ## Develop
 
 ```bash
-npm test        # component tests for the contract pieces (Node's built-in
-                # runner + TS type-stripping — no install needed)
+pnpm test       # component tests (Node's built-in runner + TS type-stripping —
+                # no install needed)
 ```
 
-Contract pieces (each with tests in `test/`): `src/types.ts` (data model +
-status machine), `src/api/validate.ts` (hand-off validation + overlap guard),
-`src/store/` (task store contract + in-memory impl), `src/ark/` (the `ArkClient`
-seam + mock), `src/scheduler/sweep.ts` (cron sweep selectors).
+Layout: `src/domain/` (the `DelegateTask` aggregate + value-object parsers +
+typed errors), `src/application/` (`ports.ts`, `use-cases.ts`),
+`src/infrastructure/` (in-memory & R2 repositories, `MockArkadeClient` /
+`RestArkadeClient`, `SystemClock`, the HTTP router, and the Cloudflare
+Worker + `DelegateRunner` DO). Tests in `test/` exercise each layer.
 
 ## References
 

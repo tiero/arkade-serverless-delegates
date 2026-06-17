@@ -360,7 +360,7 @@ strongest:
    through a single `DelegateRunner` Durable Object (`id = idFromName(tenantId)`).
    A DO is single-threaded, so cron and alarms *signal* the DO rather than run
    the round themselves, and it serializes all work for that tenant — one
-   delegation at a time. Implemented in `src/runner/DelegateRunner.ts` (serial
+   delegation at a time. Implemented in `src/infrastructure/cloudflare.ts` (serial
    queue); runtime verification under miniflare is Phase 4.
 3. **Idempotent registration (defense in depth).** `RegisterIntent` against arkd
    must be deduped by intent `txid` (as Fulmine does via its registered-intents
@@ -411,7 +411,7 @@ strongest:
 
   "triggers": { "crons": ["*/5 * * * *"] },
 
-  "vars": { "ARK_SERVER_URL": "https://ark.example.com" }
+  "vars": { "ARKADE_SERVER_URL": "https://arkade.example.com" }
   // secrets (wrangler secret put): DELEGATE_PRIVATE_KEY, API_KEYS
 }
 ```
@@ -425,32 +425,30 @@ image, which is why pure Workers wins the one-click goal.)
 
 ## 11. Proposed repo layout
 
+Layered (DDD): `domain` (no deps) ← `application` (use cases + ports) ←
+`infrastructure` (adapters). Dependencies point inward.
+
 ```
 .
 ├── README.md
-├── docs/
-│   └── DESIGN.md                # this file
-├── wrangler.jsonc
-├── package.json
-├── tsconfig.json
+├── docs/                         # DESIGN.md, WORKFLOW.md, PROGRESS.md
+├── wrangler.jsonc · package.json · tsconfig.json
 ├── src/
-│   ├── index.ts                 # Worker entry: fetch() + scheduled()
-│   ├── api/
-│   │   ├── router.ts            # /v1 routes
-│   │   ├── auth.ts              # bearer key -> tenantId
-│   │   └── validate.ts          # intent/forfeit validation
-│   ├── runner/
-│   │   └── DelegateRunner.ts    # Durable Object: the settlement round
-│   ├── ark/
-│   │   ├── ArkClient.ts         # interface over @arkade-os/sdk
-│   │   └── mock.ts              # in-memory mock for local/dev + tests
-│   ├── store/
-│   │   └── r2.ts                # Delegate CRUD + listing/index on R2
-│   ├── scheduler/
-│   │   └── sweep.ts             # cron sweep: due + stuck tasks
-│   └── types.ts                 # Delegate, DelegateIntent, DelegateForfeitTx
-└── test/
-    └── *.test.ts                # vitest + miniflare
+│   ├── domain/                   # pure model, no I/O
+│   │   ├── task.ts               # DelegateTask aggregate (owns transitions),
+│   │   │                         #   Intent/ForfeitTx/Input value objects + parsers
+│   │   └── errors.ts             # DomainError -> httpStatus (Validation/Conflict/NotFound/Invariant)
+│   ├── application/              # use cases depending only on ports
+│   │   ├── ports.ts              # Clock, DelegateRepository, ArkadeClient
+│   │   └── use-cases.ts          # create/cancel/get/list/run/sweep
+│   ├── infrastructure/           # adapters
+│   │   ├── in-memory-repository.ts · r2-repository.ts · repository-helpers.ts
+│   │   ├── arkade-clients.ts     # MockArkadeClient, RestArkadeClient (Phase 3 stub)
+│   │   ├── clock.ts              # SystemClock
+│   │   ├── http-router.ts        # /v1 routes + error boundary + bearer auth
+│   │   └── cloudflare.ts         # Worker (fetch + scheduled) + DelegateRunner DO
+│   └── index.ts                  # re-exports the Worker default + DO
+└── test/                         # *.test.ts (Node built-in runner + type-stripping)
 ```
 
 ---
@@ -460,7 +458,7 @@ image, which is why pure Workers wins the one-click goal.)
 | Phase | Deliverable | Exit criteria |
 |---|---|---|
 | **0 — Design** | this doc | approved |
-| **1 — Skeleton** | Worker + R2 + Cron + full API against a **mock `ArkClient`** | `wrangler dev`: hand off → stored → cron sweep flips to `completed` (mock); tests green |
+| **1 — Skeleton** | Worker + R2 + Cron + full API against a **mock `ArkadeClient`** | `wrangler dev`: hand off → stored → cron sweep flips to `completed` (mock); tests green |
 | **2 — SDK spike** | validate `@arkade-os/sdk` in `workerd`; decide raw-round vs delegator-helper; measure round duration | go/no-go on pure-Workers vs container |
 | **3 — Real round** | `DelegateRunner` against `arkd` (regtest stack) | a real VTXO renewed end-to-end on regtest |
 | **4 — Hardening** | DO alarms, retry/backoff, status indexes, overlap guard, auth/quotas, observability | crash/restart safe; multi-tenant isolated |

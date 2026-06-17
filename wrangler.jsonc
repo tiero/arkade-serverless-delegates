@@ -18,6 +18,6 @@
   // Coarse backstop sweep; precise per-task timing comes from DO alarms (Phase 4).
   "triggers": { "crons": ["*/5 * * * *"] },
 
-  "vars": { "ARK_SERVER_URL": "https://ark.example.com" }
+  "vars": { "ARKADE_SERVER_URL": "https://arkade.example.com" }
   // Secret (not in config): `wrangler secret put API_KEYS`  (JSON apiKey->tenantId)
 }

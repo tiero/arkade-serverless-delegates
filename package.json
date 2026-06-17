@@ -7,6 +7,7 @@
   "engines": {
     "node": ">=22"
   },
+  "packageManager": "pnpm@10.33.0",
   "scripts": {
     "test": "node --test --experimental-strip-types --disable-warning=ExperimentalWarning \"test/*.test.ts\"",
     "test:watch": "node --test --watch --experimental-strip-types --disable-warning=ExperimentalWarning \"test/*.test.ts\"",

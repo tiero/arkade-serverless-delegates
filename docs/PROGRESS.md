@@ -14,39 +14,38 @@
 - [x] Architecture decision: pure Workers + DO + R2 + Cron (DESIGN §6)
 - [x] Guardrails (`CLAUDE.md`) + workflow (`docs/WORKFLOW.md`)
 
-## Phase 1 — Skeleton (mock ArkClient, no arkd)
-Contract pieces, each with component tests in `test/` (25 tests green):
-- [x] Data model + status machine — `src/types.ts` (`types.test.ts`)
-- [x] Hand-off validation + overlap guard — `src/api/validate.ts` (`validate.test.ts`)
-- [x] Task store contract + in-memory impl — `src/store/*.ts` (`store.test.ts`)
-- [x] ArkClient seam + mock — `src/ark/*.ts` (`mock-ark.test.ts`)
-- [x] Cron-sweep selectors — `src/scheduler/sweep.ts` (`sweep.test.ts`)
-- [x] **Delegate service** — `createDelegate()` / `cancelDelegate()` compose
-      validate + overlap guard + store — `src/core/service.ts` (`service.test.ts`).
-      Antithesis: stores intent verbatim (custody test), 409 on overlap, cancel
-      only for `pending`, tenant-scoped 404s.
-- [x] **API router** — `POST/GET/DELETE /v1/delegates`, `GET /v1/health`,
-      bearer-key → tenantId — `src/api/router.ts` (`router.test.ts`).
-      Antithesis: 401 unauth, 400 bad JSON, cross-tenant access → 404 (no
-      existence leak), 405/404 for bad method/route.
-- [x] **Runner core (mock)** — pending → registering → in_round → completed (or
-      failed) via `ArkClient`, with a transition guard — `src/runner/runner.ts`
-      (`runner.test.ts`). Antithesis: custody test (forwards intent/forfeits
-      verbatim), idempotent on non-pending, failure records reason, retry
-      accumulates `attempts`. Synthesis: added `attempts` to the record +
-      DESIGN §5.
-- [x] **Cron sweep wiring** — `runSweep` recovers stuck/failed (bounded by
-      maxAttempts) then dispatches due tasks via the runner — `src/scheduler/cron.ts`
-      (`cron.test.ts`). Level-triggered (re-derives from state each tick) →
-      resilient to missed crons; tenant-scoped.
-- [x] `wrangler.jsonc` + Worker entry (`fetch` + `scheduled`) + R2 store +
-      `DelegateRunner` DO (per-tenant serialization, DESIGN §8.1) + `RestArkClient`
-      stub — `src/index.ts`, `src/runner/DelegateRunner.ts`, `src/store/r2.ts`,
-      `src/ark/rest.ts`, `wrangler.jsonc`. R2 store covered by `r2-store.test.ts`;
-      the DO + deploy are config/code, not runtime-verified here.
+## Phase 1 — Skeleton, DDD-layered (mock ArkadeClient, no arkd)
+47 component tests green (`pnpm test`). Layered `domain → application → infrastructure`:
+- **Domain** — `src/domain/task.ts`: `DelegateTask` aggregate owns the status
+  machine (illegal transitions throw); value-object parsers (`parseIntent`,
+  `parseForfeitTxs`, `parseFee`, `resolveScheduledAt`) turn untrusted JSON into
+  valid objects or `ValidationError`. `src/domain/errors.ts`: typed errors →
+  httpStatus. (`domain.test.ts`)
+- **Application** — `src/application/ports.ts` (`Clock`, `DelegateRepository`,
+  `ArkadeClient`); `src/application/use-cases.ts` (`createDelegate`,
+  `cancelDelegate`, `getDelegate`, `listDelegates`, `runDelegate`,
+  `sweepDelegates`). (`use-cases.test.ts`)
+- **Infrastructure** — in-memory + R2 repositories (shared helpers; R2 follows
+  the list cursor + skips corrupt objects), `MockArkadeClient` /
+  `RestArkadeClient` (Phase-3 stub), `SystemClock`, the HTTP router (error
+  boundary + bearer auth + id/status validation), and the Cloudflare worker +
+  `DelegateRunner` DO. (`repository.test.ts`, `http-router.test.ts`,
+  `arkade-client.test.ts`)
 
-**Phase 1 is complete: 58 component tests green. Settlement (RestArkClient) is
-the one remaining seam and is BLOCKED on a live arkd — see Phase 3.**
+Review-driven fixes folded into the refactor: prototype-chain auth bypass
+(Map lookup + non-string guard), malformed input → 400 not 500 (value-object
+parsing + top-level error boundary), R2 list truncation → cursor pagination,
+corrupt-record skip, decodeURIComponent/id-shape → 404, no same-tick re-dispatch
+of recovered tasks, fee-as-integer, status allow-list, API_KEYS parsed once,
+`allSettled` fan-out, stale `failReason` cleared on recover, `structuredClone`.
+
+**Phase 1 is complete. Settlement (`RestArkadeClient`) is the one remaining seam,
+BLOCKED on a live arkd — see Phase 3.**
+
+Deferred from the review (need arkd/codec or runtime, not faked here):
+`scheduledAt` is still request-supplied (derived from the signed `validAt` only
+when the message is decodable — full derivation is Phase 3); DO serialization is
+not runtime-verified (Phase 4).
 
 ## Phase 2 — SDK spike (go/no-go)  ← likely BLOCKED here
 - [ ] [BLOCKED] Validate `@arkade-os/sdk` imports + runs under `workerd`
@@ -56,8 +55,9 @@ the one remaining seam and is BLOCKED on a live arkd — see Phase 3.**
       duration vs DO budget. *Needs:* the SDK + a reachable `arkd`/regtest.
 
 ## Phase 3 — Real settlement round
-- [ ] [BLOCKED] `RestArkClient implements ArkClient` against `arkd` on the
-      regtest stack. *Needs:* the Arkade regtest stack + outbound network.
+- [ ] [BLOCKED] `RestArkadeClient` against `arkd` on the regtest stack; derive
+      `scheduledAt` from the decoded signed intent `validAt`. *Needs:* the
+      Arkade regtest stack + outbound network.
 
 ## Phase 4 — Hardening
 - [ ] DO alarms for precise per-task scheduling (backstop: the cron sweep).
@@ -74,3 +74,9 @@ the one remaining seam and is BLOCKED on a live arkd — see Phase 3.**
 - 2026-06-17: Tests use Node's built-in runner + type-stripping (zero deps) so
   the loop never depends on a network install. Workers-runtime tests
   (miniflare) are deferred to a later, separate phase.
+- 2026-06-17: Switched to **pnpm**; renamed Ark → **Arkade** in our own symbols
+  (`ArkadeClient`, `ARKADE_SERVER_URL`), keeping `arkd` (the daemon's real name).
+- 2026-06-17: Restructured to a **DDD** layout (domain/application/infrastructure)
+  with a `Clock` port + injectable repositories so cron/time are testable. The
+  refactor folded in the `/code-review` findings (auth bypass, malformed-input
+  500s, R2 truncation, double-dispatch window, etc.).
