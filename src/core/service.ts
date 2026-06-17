@@ -45,6 +45,7 @@ export async function createDelegate(
     status: "pending",
     failReason: "",
     commitmentTxid: "",
+    attempts: 0,
     createdAt: nowSecs,
     updatedAt: nowSecs,
   };

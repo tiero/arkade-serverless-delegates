@@ -29,9 +29,12 @@ Contract pieces, each with component tests in `test/` (25 tests green):
       bearer-key → tenantId — `src/api/router.ts` (`router.test.ts`).
       Antithesis: 401 unauth, 400 bad JSON, cross-tenant access → 404 (no
       existence leak), 405/404 for bad method/route.
-- [ ] **Runner core (mock)** — pure orchestration: pending → registering →
-      in_round → completed via `ArkClient`, with retry/backoff and status
-      transitions. Test against `MockArkClient` (incl. `failTimes`).
+- [x] **Runner core (mock)** — pending → registering → in_round → completed (or
+      failed) via `ArkClient`, with a transition guard — `src/runner/runner.ts`
+      (`runner.test.ts`). Antithesis: custody test (forwards intent/forfeits
+      verbatim), idempotent on non-pending, failure records reason, retry
+      accumulates `attempts`. Synthesis: added `attempts` to the record +
+      DESIGN §5.
 - [ ] **Cron sweep wiring** — sweep selects due + stuck, dispatches to runner,
       persists results. End-to-end test on the in-memory store + mock ark.
 - [ ] `wrangler.jsonc` + Worker entry (`fetch` + `scheduled`) + R2/DO bindings

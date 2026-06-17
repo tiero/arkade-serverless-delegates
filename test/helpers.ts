@@ -33,6 +33,7 @@ export function makeRecord(over: Partial<DelegateRecord> = {}): DelegateRecord {
     status: over.status ?? "pending",
     failReason: over.failReason ?? "",
     commitmentTxid: over.commitmentTxid ?? "",
+    attempts: over.attempts ?? 0,
     createdAt: over.createdAt ?? 1,
     updatedAt: over.updatedAt ?? 1,
   };

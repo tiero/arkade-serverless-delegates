@@ -241,6 +241,7 @@ Records mirror Fulmine's `Delegate` (§2.1), as JSON.
   "status": "pending",
   "failReason": "",
   "commitmentTxid": "",
+  "attempts": 0,
   "createdAt": 1749000000,
   "updatedAt": 1749000000
 }

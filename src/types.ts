@@ -44,6 +44,8 @@ export interface DelegateRecord {
   status: DelegateStatus;
   failReason: string;
   commitmentTxid: string;
+  /** number of settlement-round attempts made (drives bounded retry) */
+  attempts: number;
   createdAt: number;
   updatedAt: number;
 }
