@@ -21,9 +21,10 @@ Contract pieces, each with component tests in `test/` (25 tests green):
 - [x] Task store contract + in-memory impl — `src/store/*.ts` (`store.test.ts`)
 - [x] ArkClient seam + mock — `src/ark/*.ts` (`mock-ark.test.ts`)
 - [x] Cron-sweep selectors — `src/scheduler/sweep.ts` (`sweep.test.ts`)
-- [ ] **Delegate service** — wire validate → store → schedule into one
-      `createDelegate()` / `cancelDelegate()` flow over the store (with overlap
-      lock). Component-test the happy path + rejection paths.
+- [x] **Delegate service** — `createDelegate()` / `cancelDelegate()` compose
+      validate + overlap guard + store — `src/core/service.ts` (`service.test.ts`).
+      Antithesis: stores intent verbatim (custody test), 409 on overlap, cancel
+      only for `pending`, tenant-scoped 404s.
 - [ ] **API router** — `POST/GET/DELETE /v1/delegates`, `GET /v1/health`;
       bearer-key → tenantId. Test routing + auth + error shapes (no Workers
       runtime needed: test the handler over `Request`/`Response`).
