@@ -5,9 +5,13 @@ users' [VTXOs](https://docs.arkadeos.com/learn/core-concepts/vtxo-lifecycle-and-
 alive by **renewing them before they expire, without ever taking custody** — and
 deploys to **Cloudflare** with (near) one click.
 
-> **Status: design phase.** This repo currently contains the design only. See
-> **[`docs/DESIGN.md`](docs/DESIGN.md)**. Implementation follows once the design
-> is approved.
+> **Status: Phase 1 (skeleton).** The design is in
+> **[`docs/DESIGN.md`](docs/DESIGN.md)**; the contract pieces (data model,
+> hand-off validation, task store, ArkClient seam + mock, cron sweep) are
+> implemented in `src/` with component tests in `test/`. Build proceeds via a
+> guardrailed dialectical loop — see [`CLAUDE.md`](CLAUDE.md),
+> [`docs/WORKFLOW.md`](docs/WORKFLOW.md), and live state in
+> [`docs/PROGRESS.md`](docs/PROGRESS.md).
 
 ## Why
 
@@ -42,6 +46,18 @@ user ──POST signed intent + forfeits──▶ API Worker ──▶ R2 (tasks
 
 See **[`docs/DESIGN.md`](docs/DESIGN.md)** for the full architecture, data model,
 API, trust model, risks, and a phased roadmap.
+
+## Develop
+
+```bash
+npm test        # component tests for the contract pieces (Node's built-in
+                # runner + TS type-stripping — no install needed)
+```
+
+Contract pieces (each with tests in `test/`): `src/types.ts` (data model +
+status machine), `src/api/validate.ts` (hand-off validation + overlap guard),
+`src/store/` (task store contract + in-memory impl), `src/ark/` (the `ArkClient`
+seam + mock), `src/scheduler/sweep.ts` (cron sweep selectors).
 
 ## References
 
