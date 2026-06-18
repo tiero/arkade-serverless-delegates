@@ -267,9 +267,11 @@ Records mirror Fulmine's `Delegate` (§2.1), as JSON.
   does this with **no `await` between the check and the write**, so two
   concurrent creates with overlapping inputs cannot both succeed in one isolate.
   R2 has no compare-and-swap, so its read→write still yields; **cross-isolate
-  strictness comes from routing a tenant's writes through the per-tenant
-  DelegateRunner DO** (§8.1). (Chosen over the earlier `locks/{inputTxid}:{vout}`
-  marker-key sketch: one claim, no separate lock-lifecycle to leak.)
+  strictness comes from the Worker `fetch` routing `POST /v1/delegates` through
+  the tenant's single-threaded `DelegateRunner` DO** (`cloudflare.ts`), which
+  serializes creates so two can't interleave the check and the write (§8.1).
+  (Chosen over the earlier `locks/{inputTxid}:{vout}` marker-key sketch: one
+  claim, no separate lock-lifecycle to leak.)
 
 ---
 
@@ -379,14 +381,16 @@ strongest:
    non-`pending` task and no-ops. This makes *sequential* repeats safe — cron
    firing twice, or cron + a DO alarm back-to-back, renews exactly once (test:
    *sequential triggers*, ark called once).
-2. **Serialization via a Durable Object (the real fix).** The status guard is
-   read-then-write, and **R2 has no atomic compare-and-swap**, so two *parallel*
-   isolates could both read `pending`. The fix (§4): route a tenant's dispatch
-   through a single `DelegateRunner` Durable Object (`id = idFromName(tenantId)`).
-   A DO is single-threaded, so cron and alarms *signal* the DO rather than run
-   the round themselves, and it serializes all work for that tenant — one
-   delegation at a time. Implemented in `src/infrastructure/cloudflare.ts` (serial
-   queue); runtime verification under miniflare is Phase 4.
+2. **Serialization via a Durable Object (the real fix).** Read-then-write guards
+   (the status guard here, and the input-overlap guard in §5) are unsafe when two
+   *parallel* isolates run them, because **R2 has no atomic compare-and-swap**.
+   The fix (§4): route a tenant's writes through a single `DelegateRunner` Durable
+   Object (`id = idFromName(tenantId)`). A DO is single-threaded, so both the cron
+   **sweep** (cron/alarms *signal* the DO rather than run the round themselves)
+   **and `POST /v1/delegates` creates** (the Worker `fetch` forwards them to the
+   DO) are serialized — one write at a time for that tenant. Implemented in
+   `src/infrastructure/cloudflare.ts` (serial queue); runtime verification under
+   miniflare is Phase 4.
 3. **Idempotent registration (defense in depth).** `RegisterIntent` against arkd
    must be deduped by intent `txid` (as Fulmine does via its registered-intents
    map), so even a double-submit cannot double-renew. The cross-task **overlap

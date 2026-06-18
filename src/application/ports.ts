@@ -25,10 +25,11 @@ export interface DelegateRepository {
   /**
    * Atomically reserve the task's inputs and persist it, iff none overlap an
    * ACTIVE task. Returns the conflicting input keys (empty => saved). This is the
-   * strict overlap guard (docs/DESIGN.md §5, §8.1): the overlap check and the
-   * write happen with no `await` between them, so two concurrent creates with
-   * overlapping inputs cannot both succeed within one isolate. Cross-isolate
-   * strictness still relies on the per-tenant DelegateRunner DO serializer.
+   * strict overlap guard (docs/DESIGN.md §5, §8.1). The in-memory adapter does
+   * the check and write with no `await` between them (atomic within an isolate);
+   * the R2 adapter cannot (no CAS), so the Worker routes creates through the
+   * per-tenant DelegateRunner DO, which serializes them so the read-then-write
+   * cannot race across isolates.
    */
   saveIfNoOverlap(state: DelegateTaskState): Promise<string[]>;
   load(tenantId: string, id: string): Promise<DelegateTaskState | null>;

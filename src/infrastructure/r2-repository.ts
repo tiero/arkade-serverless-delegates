@@ -43,8 +43,9 @@ export class R2DelegateRepository implements DelegateRepository {
   }
 
   // R2 has no compare-and-swap, so readAll()->put() yields between read and
-  // write: this enforces the overlap guard, but cross-isolate strictness relies
-  // on the per-tenant DelegateRunner DO serializing a tenant's writes (§8.1).
+  // write. This alone is NOT atomic across isolates; correctness relies on the
+  // Worker routing creates through the per-tenant DelegateRunner DO, which
+  // serializes a tenant's writes so two creates can't interleave here (§8.1).
   async saveIfNoOverlap(state: DelegateTaskState): Promise<string[]> {
     const conflicts = overlappingActiveKeys(await this.readAll(state.tenantId), state);
     if (conflicts.length > 0) return conflicts;

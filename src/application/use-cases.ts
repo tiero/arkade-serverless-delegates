@@ -44,8 +44,10 @@ export async function createDelegate(
   );
 
   // Strict overlap guard: atomically reject inputs already claimed by an active
-  // task (one critical section, no read-then-act window). Per-tenant DO
-  // serialization extends this across isolates (docs/DESIGN.md §5, §8.1).
+  // task. In-memory this is a single critical section; on R2 (read-then-write,
+  // no CAS) the cross-isolate guarantee comes from the Worker routing creates
+  // through the per-tenant DelegateRunner DO, which serializes them
+  // (cloudflare.ts; docs/DESIGN.md §5, §8.1).
   const overlap = await repo.saveIfNoOverlap(task.toState());
   if (overlap.length > 0) throw new ConflictError(`inputs already delegated: ${overlap.join(", ")}`);
   return task.toState();

@@ -28,9 +28,20 @@ export async function handleRequest(request: Request, deps: RouterDeps): Promise
   try {
     return await route(request, deps);
   } catch (e) {
-    if (e instanceof DomainError) return json(e.httpStatus, { error: e.message });
-    return json(500, { error: "internal error" });
+    return errorResponse(e);
   }
+}
+
+/** Map a thrown domain error to its HTTP status; anything else is a clean 500. */
+export function errorResponse(e: unknown): Response {
+  if (e instanceof DomainError) return json(e.httpStatus, { error: e.message });
+  return json(500, { error: "internal error" });
+}
+
+/** Extract the `Bearer <token>` value from a request, or null. */
+export function bearerToken(request: Request): string | null {
+  const m = /^Bearer\s+(.+)$/i.exec(request.headers.get("authorization") ?? "");
+  return m ? m[1].trim() : null;
 }
 
 async function route(request: Request, deps: RouterDeps): Promise<Response> {
@@ -62,10 +73,9 @@ async function route(request: Request, deps: RouterDeps): Promise<Response> {
 }
 
 async function authenticate(request: Request, deps: RouterDeps): Promise<string | null> {
-  const header = request.headers.get("authorization") ?? "";
-  const m = /^Bearer\s+(.+)$/i.exec(header);
-  if (!m) return null;
-  const tenantId = await deps.resolveTenant(m[1].trim());
+  const token = bearerToken(request);
+  if (!token) return null;
+  const tenantId = await deps.resolveTenant(token);
   // Guard against non-string results (e.g. prototype-chain lookups returning a
   // function); only a real, non-empty tenant id authenticates.
   return typeof tenantId === "string" && tenantId.length > 0 ? tenantId : null;
@@ -113,7 +123,7 @@ function parsePositiveInt(v: string | null): number | undefined {
   return n;
 }
 
-function json(status: number, body: unknown): Response {
+export function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },

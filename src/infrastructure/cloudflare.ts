@@ -7,11 +7,11 @@
 
 import { SingleKey } from "@arkade-os/sdk";
 
-import { handleRequest, type RouterDeps } from "./http-router.ts";
+import { bearerToken, errorResponse, handleRequest, json, type RouterDeps } from "./http-router.ts";
 import { R2DelegateRepository } from "./r2-repository.ts";
 import { RestArkadeClient } from "./rest-arkade-client.ts";
 import { SystemClock } from "./clock.ts";
-import { sweepDelegates } from "../application/use-cases.ts";
+import { createDelegate, sweepDelegates } from "../application/use-cases.ts";
 
 export interface Env {
   DELEGATES: R2Bucket;
@@ -61,6 +61,25 @@ function parseKeyMap(raw: string | undefined): Map<string, string> {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const map = keyMap(env);
+    const url = new URL(request.url);
+    const path = url.pathname.replace(/\/+$/, "") || "/";
+
+    // A create mutates the tenant's input-overlap set with a read-then-write that
+    // R2 can't do atomically (no CAS). Route it through the tenant's single-
+    // threaded DelegateRunner DO so concurrent creates serialize and the overlap
+    // guard holds across isolates (docs/DESIGN.md §5, §8.1). Reads + cancel stay
+    // on the direct path.
+    if (request.method === "POST" && path === "/v1/delegates") {
+      const token = bearerToken(request);
+      const tenantId = token ? (map.get(token) ?? null) : null;
+      if (!tenantId) return json(401, { error: "unauthorized" });
+      const stub = env.RUNNER.get(env.RUNNER.idFromName(tenantId));
+      return stub.fetch("https://runner/op", {
+        method: "POST",
+        body: JSON.stringify({ op: "create", tenantId, body: await request.text() }),
+      });
+    }
+
     const deps: RouterDeps = {
       repo: new R2DelegateRepository(env.DELEGATES),
       clock,
@@ -104,11 +123,30 @@ export class DelegateRunner {
   }
 
   async fetch(request: Request): Promise<Response> {
-    const { tenantId } = (await request.json()) as { tenantId: string };
+    const msg = (await request.json()) as { op?: string; tenantId: string; body?: string };
+    if (msg.op === "create") {
+      // Serialized so the overlap guard's read-then-write can't race another create.
+      return this.serialize(() => this.create(msg.tenantId, msg.body ?? ""));
+    }
     const summary = await this.serialize(() =>
-      sweepDelegates(new R2DelegateRepository(this.env.DELEGATES), this.arkade, clock, tenantId),
+      sweepDelegates(new R2DelegateRepository(this.env.DELEGATES), this.arkade, clock, msg.tenantId),
     );
     return new Response(JSON.stringify(summary), { headers: { "content-type": "application/json" } });
+  }
+
+  private async create(tenantId: string, rawBody: string): Promise<Response> {
+    let body: unknown;
+    try {
+      body = JSON.parse(rawBody);
+    } catch {
+      return json(400, { error: "invalid JSON body" });
+    }
+    try {
+      const state = await createDelegate(new R2DelegateRepository(this.env.DELEGATES), clock, tenantId, body as never);
+      return json(201, state);
+    } catch (e) {
+      return errorResponse(e);
+    }
   }
 
   private serialize<T>(fn: () => Promise<T>): Promise<T> {
