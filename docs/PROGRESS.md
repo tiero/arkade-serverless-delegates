@@ -93,8 +93,12 @@ the Workers runtime / a live arkd.
 - [x] Idempotent `RegisterIntent` (dedupe by intent — DESIGN §8.1 layer 3).
       Landed in Phase 3 (`RestArkadeClient`, dedupe by signed proof). Runtime
       verification waits on a live arkd (BLOCKED, see Phase 3).
-- [ ] Runtime-verify the DO serialization under miniflare; status indexes for
-      large tenants; strict overlap lock; per-tenant quotas; observability.
+- [x] Strict overlap lock: `DelegateRepository.saveIfNoOverlap` — atomic
+      claim+persist (in-memory: no await between check and write, so concurrent
+      creates with overlapping inputs can't both win; R2 + DO for cross-isolate
+      strictness). DESIGN §5/§8.1. Unit-tested incl. a concurrent-create case.
+- [ ] Remaining: DO alarms; runtime-verify DO serialization under miniflare;
+      status indexes for large tenants; per-tenant quotas; observability.
 
 ## Phase 5 — One-click deploy
 - [ ] "Deploy to Cloudflare" button; deploy docs; optional container variant.

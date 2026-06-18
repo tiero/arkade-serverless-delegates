@@ -46,6 +46,24 @@ describe("createDelegate", () => {
     await assert.rejects(() => createDelegate(repo, clock, "t_a", makeCreateInput()), ConflictError);
     assert.ok(await createDelegate(repo, clock, "t_b", makeCreateInput())); // other tenant ok
   });
+
+  it("lets only one of two CONCURRENT creates claim the same inputs (atomic guard)", async () => {
+    const repo = new InMemoryDelegateRepository();
+    const clock = new FixedClock(NOW);
+    const input = makeCreateInput(); // both requests claim the same input
+    // Fire both without awaiting between them: the old read-then-save guard let
+    // both through (each saw an empty active set before either saved).
+    const results = await Promise.allSettled([
+      createDelegate(repo, clock, "t_a", input),
+      createDelegate(repo, clock, "t_a", input),
+    ]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    const rejected = results.filter((r) => r.status === "rejected");
+    assert.equal(fulfilled.length, 1, "exactly one create wins");
+    assert.equal(rejected.length, 1);
+    assert.ok((rejected[0] as PromiseRejectedResult).reason instanceof ConflictError);
+    assert.equal((await repo.list("t_a")).length, 1, "only one task persisted");
+  });
 });
 
 describe("cancelDelegate", () => {

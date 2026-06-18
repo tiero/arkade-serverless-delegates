@@ -22,3 +22,9 @@ export function activeKeysOf(recs: DelegateTaskState[]): Set<string> {
   }
   return keys;
 }
+
+/** Input keys of `state` that overlap an ACTIVE task in `recs` (empty => no overlap). */
+export function overlappingActiveKeys(recs: DelegateTaskState[], state: DelegateTaskState): string[] {
+  const active = activeKeysOf(recs);
+  return state.intent.inputs.map(inputKey).filter((k) => active.has(k));
+}

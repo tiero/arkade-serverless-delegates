@@ -258,10 +258,16 @@ Records mirror Fulmine's `Delegate` (§2.1), as JSON.
     (`tenants/{id}/index.json`) or a status-prefixed pointer key
     (`tenants/{id}/by-status/{status}/{scheduledAt}-{id}`) updated on each
     transition. Decide in Phase 2 based on expected task counts.
-- **Input-overlap guard** (Fulmine rejects overlapping inputs): keep
-  `tenants/{id}/locks/{inputTxid}:{vout}` marker keys; check-and-set on
-  hand-off. Document the race (R2 is not transactional) and serialize via a
-  per-tenant Durable Object if strictness is required.
+- **Input-overlap guard** (Fulmine rejects overlapping inputs): implemented as
+  an atomic claim, `DelegateRepository.saveIfNoOverlap(state)` — it checks the
+  new task's inputs against the union of ACTIVE tasks' inputs and persists in one
+  step, returning the conflicting keys (empty ⇒ saved). The in-memory adapter
+  does this with **no `await` between the check and the write**, so two
+  concurrent creates with overlapping inputs cannot both succeed in one isolate.
+  R2 has no compare-and-swap, so its read→write still yields; **cross-isolate
+  strictness comes from routing a tenant's writes through the per-tenant
+  DelegateRunner DO** (§8.1). (Chosen over the earlier `locks/{inputTxid}:{vout}`
+  marker-key sketch: one claim, no separate lock-lifecycle to leak.)
 
 ---
 

@@ -98,6 +98,44 @@ function contract(name: string, makeRepo: () => DelegateRepository) {
       assert.ok(keys.has("x:0"));
       assert.ok(!keys.has("y:0"));
     });
+
+    it("saveIfNoOverlap persists when clear and reports conflicts otherwise", async () => {
+      const repo = makeRepo();
+      const first = makeState({
+        id: "first",
+        tenantId: "t_a",
+        status: "pending",
+        intent: { txid: "t", message: "m", proof: "p", inputs: [{ txid: "x", vout: 0 }] },
+      });
+      assert.deepEqual(await repo.saveIfNoOverlap(first), []); // clear -> saved
+      assert.equal((await repo.load("t_a", "first"))?.id, "first");
+
+      // A second task sharing input x:0 conflicts and is NOT persisted.
+      const clash = makeState({
+        id: "clash",
+        tenantId: "t_a",
+        status: "pending",
+        intent: { txid: "t", message: "m", proof: "p", inputs: [{ txid: "x", vout: 0 }] },
+      });
+      assert.deepEqual(await repo.saveIfNoOverlap(clash), ["x:0"]);
+      assert.equal(await repo.load("t_a", "clash"), null);
+
+      // A different input is fine; another tenant reusing x:0 is also fine.
+      const otherInput = makeState({
+        id: "other",
+        tenantId: "t_a",
+        status: "pending",
+        intent: { txid: "t", message: "m", proof: "p", inputs: [{ txid: "z", vout: 0 }] },
+      });
+      assert.deepEqual(await repo.saveIfNoOverlap(otherInput), []);
+      const otherTenant = makeState({
+        id: "ten_b",
+        tenantId: "t_b",
+        status: "pending",
+        intent: { txid: "t", message: "m", proof: "p", inputs: [{ txid: "x", vout: 0 }] },
+      });
+      assert.deepEqual(await repo.saveIfNoOverlap(otherTenant), []);
+    });
   });
 }
 

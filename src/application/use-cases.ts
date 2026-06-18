@@ -4,7 +4,6 @@
 
 import {
   DelegateTask,
-  inputKey,
   isActive,
   parseDelegatePublicKey,
   parseFee,
@@ -39,17 +38,16 @@ export async function createDelegate(
   const now = clock.now();
   const scheduledAt = resolveScheduledAt(intent.message, input.scheduledAt, now);
 
-  // Overlap guard: reject inputs already claimed by an active task. (Check-then-
-  // save is serialized per tenant by the DelegateRunner DO — docs/DESIGN.md §8.1.)
-  const active = await repo.activeInputKeys(tenantId);
-  const overlap = intent.inputs.map(inputKey).filter((k) => active.has(k));
-  if (overlap.length > 0) throw new ConflictError(`inputs already delegated: ${overlap.join(", ")}`);
-
   const task = DelegateTask.create(
     { tenantId, intent, forfeitTxs, fee, delegatePublicKey, scheduledAt },
     now,
   );
-  await repo.save(task.toState());
+
+  // Strict overlap guard: atomically reject inputs already claimed by an active
+  // task (one critical section, no read-then-act window). Per-tenant DO
+  // serialization extends this across isolates (docs/DESIGN.md §5, §8.1).
+  const overlap = await repo.saveIfNoOverlap(task.toState());
+  if (overlap.length > 0) throw new ConflictError(`inputs already delegated: ${overlap.join(", ")}`);
   return task.toState();
 }
 

@@ -11,7 +11,7 @@
 
 import type { DelegateTaskState } from "../domain/task.ts";
 import type { DelegateRepository, ListOptions } from "../application/ports.ts";
-import { activeKeysOf, filterSortPage } from "./repository-helpers.ts";
+import { activeKeysOf, filterSortPage, overlappingActiveKeys } from "./repository-helpers.ts";
 
 /** Minimal structural view of the R2 binding — avoids a workers-types dependency. */
 export interface R2Like {
@@ -40,6 +40,16 @@ export class R2DelegateRepository implements DelegateRepository {
 
   async save(state: DelegateTaskState): Promise<void> {
     await this.bucket.put(this.key(state.tenantId, state.id), JSON.stringify(state));
+  }
+
+  // R2 has no compare-and-swap, so readAll()->put() yields between read and
+  // write: this enforces the overlap guard, but cross-isolate strictness relies
+  // on the per-tenant DelegateRunner DO serializing a tenant's writes (§8.1).
+  async saveIfNoOverlap(state: DelegateTaskState): Promise<string[]> {
+    const conflicts = overlappingActiveKeys(await this.readAll(state.tenantId), state);
+    if (conflicts.length > 0) return conflicts;
+    await this.save(state);
+    return [];
   }
 
   async load(tenantId: string, id: string): Promise<DelegateTaskState | null> {
