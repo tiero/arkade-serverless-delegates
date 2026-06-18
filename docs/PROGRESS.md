@@ -81,13 +81,15 @@ Deferred-review items, updated:
       egress (`docs/REGTEST.md`).
 
 ## Phase 4 — Hardening
-Not started as a phase. Two items partially landed during Phase 3 (noted below);
-the rest are TODO.
+Underway. Verifiable (pure use-case) items land here; runtime-only ones wait on
+the Workers runtime / a live arkd.
 - [ ] DO alarms for precise per-task scheduling (backstop: the cron sweep).
-- [~] Persist hard expiry (`expiresAt`) **[done]** + escalate tasks near expiry
-      **[TODO]** — closes the missed-cron safety gap (DESIGN §8.1). The signed
-      `expire_at` is now decoded and persisted on the task (Phase 3); the sweep
-      does not yet escalate tasks approaching it.
+- [x] Persist hard expiry (`expiresAt`) + escalate tasks near expiry — closes
+      the missed-cron safety gap (DESIGN §8.1). `expire_at` is decoded + persisted
+      (Phase 3); the sweep now force-dispatches urgent tasks within
+      `escalationWindowSecs`, raises their attempt cap to `maxUrgentAttempts`, and
+      fails active tasks past hard expiry (`vtxo hard-expired before renewal`).
+      Unit-tested (5 escalation cases in `use-cases.test.ts`).
 - [x] Idempotent `RegisterIntent` (dedupe by intent — DESIGN §8.1 layer 3).
       Landed in Phase 3 (`RestArkadeClient`, dedupe by signed proof). Runtime
       verification waits on a live arkd (BLOCKED, see Phase 3).

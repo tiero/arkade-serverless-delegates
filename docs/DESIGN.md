@@ -353,9 +353,15 @@ successful one (test: *missed-cron resilience* in `cron.test.ts`). Safeguards:
 - A **safety margin**: `scheduledAt` is set well before the VTXO's hard expiry
   (target ≈ 90 % of lifetime, matching the SDK's auto-settle), so a late sweep
   still beats expiry.
-- *Open gap:* we don't yet persist the hard expiry (`expiresAt`) alongside
-  `scheduledAt`, so the sweep can't yet escalate a task dangerously close to
-  expiry. Tracked in Phase 4.
+- **Near-expiry escalation** (was an open gap; now closed). The hard expiry
+  `expiresAt` is decoded from the signed intent's `expire_at` and persisted
+  (§8.2). The sweep (`sweepDelegates`) keys off it: within
+  `escalationWindowSecs` of expiry a task is *urgent* — it is **force-due** even
+  if `scheduledAt` is still ahead, and its attempt cap rises to
+  `maxUrgentAttempts` so retries continue while renewal can still help. Past the
+  hard expiry, renewal is futile (the VTXO is swept), so an active task is
+  **failed** (`vtxo hard-expired before renewal`) rather than retried — a
+  liveness fault surfaced cleanly, never a wasted round.
 
 **Repeated / concurrent triggers on one delegation.** Three layers, weakest to
 strongest:

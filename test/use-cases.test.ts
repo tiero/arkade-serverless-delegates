@@ -114,7 +114,15 @@ describe("sweepDelegates", () => {
     const repo = new InMemoryDelegateRepository();
     await repo.save(makeState({ id: "due", tenantId: "t_a", status: "pending", scheduledAt: 9_999 }));
     const summary = await sweepDelegates(repo, new MockArkadeClient(), new FixedClock(10_000), "t_a");
-    assert.deepEqual(summary, { recovered: 0, gaveUp: 0, dispatched: 1, completed: 1, failed: 0 });
+    assert.deepEqual(summary, {
+      recovered: 0,
+      gaveUp: 0,
+      dispatched: 1,
+      completed: 1,
+      failed: 0,
+      escalated: 0,
+      expired: 0,
+    });
   });
 
   it("survives missed crons: a long-overdue task still runs on the next sweep", async () => {
@@ -170,5 +178,74 @@ describe("sweepDelegates", () => {
     await repo.save(makeState({ id: "b", tenantId: "t_b", status: "pending", scheduledAt: 1 }));
     await sweepDelegates(repo, new MockArkadeClient(), new FixedClock(10_000), "t_a");
     assert.equal((await repo.load("t_b", "b"))?.status, "pending");
+  });
+});
+
+describe("sweepDelegates — near-expiry escalation (DESIGN §8.1)", () => {
+  // now=10_000; window=3600 => urgent when expiresAt in (10_000, 13_600].
+  it("force-dispatches an urgent task whose scheduledAt is still in the future", async () => {
+    const repo = new InMemoryDelegateRepository();
+    await repo.save(
+      makeState({ id: "urgent", tenantId: "t_a", status: "pending", scheduledAt: 20_000, expiresAt: 12_000 }),
+    );
+    const ark = new MockArkadeClient();
+    const summary = await sweepDelegates(repo, ark, new FixedClock(10_000), "t_a");
+    assert.equal(summary.dispatched, 1, "pulled forward despite scheduledAt > now");
+    assert.equal(summary.completed, 1);
+    assert.equal(summary.escalated, 1);
+    assert.equal(ark.calls.length, 1);
+  });
+
+  it("does NOT force-dispatch a future task that is still far from expiry", async () => {
+    const repo = new InMemoryDelegateRepository();
+    await repo.save(
+      makeState({ id: "far", tenantId: "t_a", status: "pending", scheduledAt: 20_000, expiresAt: 100_000 }),
+    );
+    const summary = await sweepDelegates(repo, new MockArkadeClient(), new FixedClock(10_000), "t_a");
+    assert.equal(summary.dispatched, 0);
+    assert.equal(summary.escalated, 0);
+  });
+
+  it("retries an urgent failed task past the normal maxAttempts cap", async () => {
+    const repo = new InMemoryDelegateRepository();
+    // attempts == maxAttempts(3): a non-urgent task gives up; an urgent one recovers.
+    await repo.save(
+      makeState({ id: "spent", tenantId: "t_a", status: "failed", attempts: 3, scheduledAt: 1, expiresAt: 12_000 }),
+    );
+    const summary = await sweepDelegates(repo, new MockArkadeClient(), new FixedClock(10_000), "t_a", {
+      maxAttempts: 3,
+      maxUrgentAttempts: 6,
+    });
+    assert.equal(summary.gaveUp, 0);
+    assert.equal(summary.recovered, 1);
+    assert.equal(summary.escalated, 1);
+    assert.equal((await repo.load("t_a", "spent"))?.status, "pending");
+  });
+
+  it("gives up an urgent task once even the urgent cap is exhausted", async () => {
+    const repo = new InMemoryDelegateRepository();
+    await repo.save(
+      makeState({ id: "done", tenantId: "t_a", status: "failed", attempts: 6, scheduledAt: 1, expiresAt: 12_000 }),
+    );
+    const summary = await sweepDelegates(repo, new MockArkadeClient(), new FixedClock(10_000), "t_a", {
+      maxUrgentAttempts: 6,
+    });
+    assert.equal(summary.gaveUp, 1);
+    assert.equal(summary.recovered, 0);
+  });
+
+  it("fails an active task whose VTXO hard-expired, instead of dispatching it", async () => {
+    const repo = new InMemoryDelegateRepository();
+    await repo.save(
+      makeState({ id: "gone", tenantId: "t_a", status: "pending", scheduledAt: 1, expiresAt: 9_000 }),
+    );
+    const ark = new MockArkadeClient();
+    const summary = await sweepDelegates(repo, ark, new FixedClock(10_000), "t_a");
+    assert.equal(summary.expired, 1);
+    assert.equal(summary.dispatched, 0);
+    assert.equal(ark.calls.length, 0, "never tries to renew a swept VTXO");
+    const gone = await repo.load("t_a", "gone");
+    assert.equal(gone?.status, "failed");
+    assert.match(gone?.failReason ?? "", /hard-expired/);
   });
 });
