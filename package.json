@@ -22,6 +22,7 @@
     "wrangler": "^4.0.0"
   },
   "dependencies": {
-    "@arkade-os/sdk": "^0.4.37"
+    "@arkade-os/sdk": "^0.4.37",
+    "@scure/base": "^2.2.0"
   }
 }

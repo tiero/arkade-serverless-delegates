@@ -64,6 +64,14 @@ Take **one contract piece per iteration**; keep diffs small and reviewable.
   no `enum`, no `namespace`, no constructor **parameter properties**
   (`constructor(private x)`); declare fields explicitly instead.
 
+## Crypto & encoding
+
+- **Never hand-roll bytes/hex/hashing.** Always use Paul Miller's
+  [`@scure`](https://github.com/paulmillr/scure-base)/[`@noble`](https://github.com/paulmillr/noble-hashes)
+  libraries (e.g. `import { hex } from "@scure/base"` → `hex.encode/decode`).
+  They're already in the `@arkade-os/sdk` dependency tree; add the one you use as
+  a direct dep (pnpm's strict layout won't hoist transitive deps).
+
 ## Git
 
 - Work only on branch `claude/pensive-maxwell-5riivw`. Never push elsewhere.

@@ -16,16 +16,25 @@
 //
 // What is NOT yet verified (the Phase-3 acceptance step, BLOCKED in this
 // environment because the regtest Docker images cannot be pulled — see
-// docs/PROGRESS.md): the MuSig2 batch round itself. `settleDelegatedIntent`
-// performs the real, idempotent registration and then throws
-// `RoundNotVerifiedError` rather than fabricate a commitment txid — failing to
-// renew is a liveness fault; faking success would violate the custody contract.
-// The exact remaining round (event sequence + the `sweepTapTreeRoot` /
-// `sharedOutputAmount` derivation that `SignerSession.init` needs) is documented
-// in `rideRound` below and in DESIGN §2.2 / §8.2.
+// docs/PROGRESS.md): the MuSig2 batch round end-to-end. The full round is now
+// structured in `rideRound` (register -> stream events -> co-sign tree nonces +
+// signatures -> submit forfeits -> finalized), composed from real SDK
+// primitives and ready to verify. The single value it cannot derive without a
+// live arkd — `SignerSession.init`'s `scriptRoot` / `rootInputAmount` — is
+// isolated in `deriveSigningContext`, which throws `RoundNotVerifiedError`
+// rather than fabricate a commitment txid. Failing to renew is a liveness
+// fault; faking success would violate the custody contract (DESIGN §2.2, §8.2).
 
-import { RestArkProvider } from "@arkade-os/sdk";
-import type { ArkInfo, Identity, Intent, SignedIntent } from "@arkade-os/sdk";
+import { RestArkProvider, SettlementEventType, TxTree } from "@arkade-os/sdk";
+import type {
+  ArkInfo,
+  Identity,
+  Intent,
+  SignedIntent,
+  TreeSigningStartedEvent,
+  TxTreeNode,
+} from "@arkade-os/sdk";
+import { hex } from "@scure/base";
 
 import type { ArkadeClient, SettleRequest, SettleResult } from "../application/ports.ts";
 
@@ -123,28 +132,90 @@ export class RestArkadeClient implements ArkadeClient {
 
   /**
    * Ride the MuSig2 batch round as the delegate cosigner, mirroring Fulmine
-   * (DESIGN §2.2). The SDK exposes every primitive needed:
+   * (DESIGN §2.2), composed from `RestArkProvider`'s event stream + the delegate
+   * key's `SignerSession`. The full structure is here and ready to verify; the
+   * one value that cannot be derived correctly without a live arkd to test
+   * against is isolated in {@link deriveSigningContext} (see there).
    *
-   *   const session = this.identity.signerSession();           // delegate key
-   *   for await (const ev of this.provider.getEventStream(signal, [intentId])) {
-   *     // BatchStarted        -> note batchId
-   *     // TreeTx (chunks)     -> accumulate into TxTree.create(chunks)
-   *     // TreeSigningStarted  -> session.init(tree, sweepTapTreeRoot, sharedOutputAmount)
-   *     //                        then provider.submitTreeNonces(batchId, pubkey, await session.getNonces())
-   *     // TreeNonces (aggr.)  -> session.aggregatedNonces(...); provider.submitTreeSignatures(batchId, pubkey, await session.sign())
-   *     // BatchFinalization   -> attach connectors to the pre-signed forfeit PSBTs, then provider.submitSignedForfeitTxs(...)
-   *     // BatchFinalized      -> return { commitmentTxid: ev.commitmentTxid }
-   *     // BatchFailed         -> throw new Error(ev.reason)
-   *   }
-   *
-   * The one piece that cannot be derived correctly without a live arkd to test
-   * against is `SignerSession.init`'s `scriptRoot` (arkd's sweep tap-tree root)
-   * and `rootInputAmount` (the batch shared-output amount): arkd keeps these
-   * server-specific, and the SDK derives them inside its internal settlement
-   * handler. Completing + verifying this is the Phase-3 exit criterion, which is
-   * BLOCKED here (the regtest images can't be pulled — DESIGN §6, PROGRESS).
+   * The delegate signs the tree with its OWN key (listed in the intent's
+   * `cosigners_public_keys`); the user's forfeit txs are forwarded as-signed.
+   * We never re-sign or redirect user funds (CLAUDE.md invariant #1).
    */
-  private async rideRound(intentId: string, _req: SettleRequest): Promise<SettleResult> {
+  private async rideRound(intentId: string, req: SettleRequest): Promise<SettleResult> {
+    const identity = this.identity;
+    if (!identity) throw new Error("RestArkadeClient: missing delegate signing identity");
+
+    const session = identity.signerSession();
+    const pubkey = hex.encode(await session.getPublicKey());
+    const controller = new AbortController();
+    const chunks: TxTreeNode[] = [];
+    let signed = false;
+
+    try {
+      for await (const event of this.provider.getEventStream(controller.signal, [intentId])) {
+        switch (event.type) {
+          case SettlementEventType.BatchFailed:
+            throw new Error(`arkd batch failed: ${event.reason}`);
+
+          case SettlementEventType.TreeTx:
+            // VTXO-tree chunks streamed before signing starts; accumulate them.
+            chunks.push(event.chunk);
+            break;
+
+          case SettlementEventType.TreeSigningStarted: {
+            const tree = TxTree.create(chunks);
+            const { scriptRoot, rootInputAmount } = await this.deriveSigningContext(intentId, event, tree);
+            await session.init(tree, scriptRoot, rootInputAmount);
+            await this.provider.submitTreeNonces(event.id, pubkey, await session.getNonces());
+            break;
+          }
+
+          case SettlementEventType.TreeNonces: {
+            // Server-aggregated nonces; once complete, submit our partial sigs.
+            const { hasAllNonces } = await session.aggregatedNonces(event.txid, event.nonces);
+            if (hasAllNonces && !signed) {
+              signed = true;
+              await this.provider.submitTreeSignatures(event.id, pubkey, await session.sign());
+            }
+            break;
+          }
+
+          case SettlementEventType.BatchFinalization:
+            // Forfeit txs are already user-signed; submit them. (If arkd requires
+            // connector-input attachment first, that is the other live-verify
+            // point — DESIGN §2.2.)
+            await this.provider.submitSignedForfeitTxs(req.forfeitTxs.map((f) => f.forfeitTx));
+            break;
+
+          case SettlementEventType.BatchFinalized:
+            return { commitmentTxid: event.commitmentTxid };
+
+          default:
+            // BatchStarted / TreeSignature / StreamStarted: nothing to do.
+            break;
+        }
+      }
+      throw new Error("arkd event stream ended before the batch was finalized");
+    } finally {
+      controller.abort();
+    }
+  }
+
+  /**
+   * The remaining live-verification point (Phase-3 exit criterion).
+   * `SignerSession.init` needs `scriptRoot` (arkd's sweep tap-tree root) and
+   * `rootInputAmount` (the batch shared-output amount). Both are server-specific:
+   * the SDK derives them inside its internal settlement handler from `ArkInfo`
+   * + the unsigned commitment tx. Reproducing them must be checked against a
+   * live arkd — BLOCKED here (regtest images unpullable; DESIGN §6, §8.2,
+   * docs/PROGRESS.md). We refuse rather than guess, so a run never fabricates a
+   * commitment txid (a liveness fault, never a safety one).
+   */
+  private async deriveSigningContext(
+    intentId: string,
+    _event: TreeSigningStartedEvent,
+    _tree: TxTree,
+  ): Promise<{ scriptRoot: Uint8Array; rootInputAmount: bigint }> {
     throw new RoundNotVerifiedError(intentId);
   }
 }
