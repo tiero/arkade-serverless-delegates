@@ -1,7 +1,9 @@
 # Arkade Serverless Delegate — Design
 
-> Status: **Design doc (v0.1)** — no implementation yet. This document is the
-> contract we implement against. Code lands only after this is approved.
+> The authoritative **design contract**: implementations conform to it, and any
+> deviation updates this doc in the same change. Now partly implemented — see
+> [`docs/PROGRESS.md`](PROGRESS.md) for live state and [`README.md`](../README.md)
+> for the overview, API, and deploy.
 
 A serverless, multi-tenant **Arkade delegate**: a hosted service that keeps
 users' VTXOs alive by renewing them before they expire, **without ever taking
@@ -175,7 +177,7 @@ We build on [`arkade-os/ts-sdk`](https://github.com/arkade-os/ts-sdk)
                           │  └───────┬──────────┘                       │
                           │          │ set alarm / dispatch             │
                           │          ▼                                  │
-   Cron (* * * * *) ─────▶ │  ┌────────────────┐   alarm  ┌───────────┐ │
+   Cron (*/5 * * * *) ───▶ │  ┌────────────────┐   alarm  ┌───────────┐ │
    scheduled() sweep ─────┼─▶│ DelegateRunner  │◀─────────│  DO alarm │ │
                           │  │  Durable Object  │          └───────────┘ │
                           │  │  - registerIntent│                        │
@@ -200,8 +202,8 @@ We build on [`arkade-os/ts-sdk`](https://github.com/arkade-os/ts-sdk)
 
 - **Durable Object alarm** = *precision.* On hand-off we set an alarm at
   `scheduledAt` so the round fires close to the right moment.
-- **Cron Trigger** = *durability.* A once-a-minute sweep catches anything the
-  alarm missed (deploys, alarm loss, crashes) and re-drives tasks stuck in
+- **Cron Trigger** = *durability.* A periodic sweep (`*/5 * * * *`) catches
+  anything the alarm missed (deploys, alarm loss, crashes) and re-drives tasks stuck in
   `registering`/`in_round` past a timeout. It is also the natural place for
   retry-with-backoff before the hard expiry deadline.
 
@@ -295,16 +297,17 @@ budget (§8).
 
 ## 7. HTTP API (v1)
 
-All endpoints require `Authorization: Bearer <tenant-api-key>`; the key resolves
-to a `tenantId` and namespaces everything in R2.
+All endpoints **except `/v1/health`** require `Authorization: Bearer
+<tenant-api-key>`; the key resolves to a `tenantId` and namespaces everything in
+R2. (Quick reference — see [README](../README.md#http-api-v1) for examples.)
 
 | Method | Path | Body / Query | Description |
 |---|---|---|---|
-| `POST` | `/v1/delegates` | `{ intent, forfeitTxs, delegatePublicKey, fee }` | Hand off a signed delegation. Validates, computes `scheduledAt` from `intent.message.validAt`, stores `pending`, arms scheduling. → `{ id, status, scheduledAt }` |
+| `POST` | `/v1/delegates` | `{ intent, forfeitTxs, delegatePublicKey, fee, scheduledAt? }` | Hand off a signed delegation. Validates, derives `scheduledAt` from the signed `intent.message.valid_at`, stores `pending`, arms scheduling. → `201` task |
 | `GET` | `/v1/delegates` | `?status=&limit=&offset=` | List tasks for the tenant (mirrors Fulmine `ListDelegates`). |
 | `GET` | `/v1/delegates/:id` | — | Fetch one task. |
 | `DELETE` | `/v1/delegates/:id` | — | Cancel a pending task. |
-| `GET` | `/v1/health` | — | Liveness + `arkd` reachability. |
+| `GET` | `/v1/health` | — | Liveness, `{ status: "ok" }` (no auth). An `arkd` reachability probe is available via the client's `health()`/`getInfo()` but not yet wired to this route. |
 
 Validation on hand-off: decode intent & proof, verify it covers the declared
 inputs, ensure one forfeit tx per input, reject overlapping inputs, sanity-check
@@ -448,9 +451,11 @@ network policy returns `403` for (`docs/REGTEST.md`, `docs/PROGRESS.md`).
 
 ---
 
-## 10. Cloudflare configuration (sketch)
+## 10. Cloudflare configuration
 
-`wrangler.jsonc` (illustrative — bindings auto-provision on deploy):
+The live config is [`wrangler.jsonc`](../wrangler.jsonc); the **deploy steps**
+(sign up → `wrangler login` → create the R2 bucket → `wrangler deploy` → set
+secrets) live in the [README](../README.md#deploy-to-cloudflare). Bindings:
 
 ```jsonc
 {
@@ -459,27 +464,23 @@ network policy returns `403` for (`docs/REGTEST.md`, `docs/PROGRESS.md`).
   "compatibility_date": "2026-06-01",
   "compatibility_flags": ["nodejs_compat"],
 
-  "r2_buckets": [
-    // no bucket name/id => wrangler auto-provisions on deploy
-    { "binding": "DELEGATES", "bucket_name": "arkade-delegate-tasks" }
-  ],
-
-  "durable_objects": {
-    "bindings": [{ "name": "RUNNER", "class_name": "DelegateRunner" }]
-  },
+  "r2_buckets": [{ "binding": "DELEGATES", "bucket_name": "arkade-delegate-tasks" }],
+  "durable_objects": { "bindings": [{ "name": "RUNNER", "class_name": "DelegateRunner" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["DelegateRunner"] }],
-
   "triggers": { "crons": ["*/5 * * * *"] },
-
   "vars": { "ARKADE_SERVER_URL": "https://arkade.example.com" }
-  // secrets (wrangler secret put): DELEGATE_PRIVATE_KEY, API_KEYS
+  // secrets (wrangler secret put): API_KEYS, DELEGATE_PRIVATE_KEY
 }
 ```
 
-**One-click deploy:** a *Deploy to Cloudflare* button in the README points at
-this repo; Cloudflare clones it and provisions Worker + R2 + DO + Cron from the
-config. (The container variant would additionally need Docker / a published
-image, which is why pure Workers wins the one-click goal.)
+`wrangler deploy` creates the Durable Object + Cron from this config and uploads
+the Worker; the R2 bucket is created once with `wrangler r2 bucket create`. The
+DO and Cron need no manual provisioning.
+
+**One-click deploy (Phase 5):** a *Deploy to Cloudflare* button pointing at this
+repo would fork it into the user's account and provision Worker + R2 + DO + Cron
+in the browser. (The container variant would additionally need Docker / a
+published image, which is why pure Workers wins the one-click goal.)
 
 ---
 
@@ -491,7 +492,7 @@ Layered (DDD): `domain` (no deps) ← `application` (use cases + ports) ←
 ```
 .
 ├── README.md
-├── docs/                         # DESIGN.md, WORKFLOW.md, PROGRESS.md
+├── docs/                         # DESIGN.md, WORKFLOW.md, PROGRESS.md, REGTEST.md
 ├── wrangler.jsonc · package.json · tsconfig.json
 ├── src/
 │   ├── domain/                   # pure model, no I/O
@@ -503,12 +504,13 @@ Layered (DDD): `domain` (no deps) ← `application` (use cases + ports) ←
 │   │   └── use-cases.ts          # create/cancel/get/list/run/sweep
 │   ├── infrastructure/           # adapters
 │   │   ├── in-memory-repository.ts · r2-repository.ts · repository-helpers.ts
-│   │   ├── arkade-clients.ts     # MockArkadeClient, RestArkadeClient (Phase 3 stub)
+│   │   ├── arkade-clients.ts     # MockArkadeClient (SDK-free, for the unit loop)
+│   │   ├── rest-arkade-client.ts # RestArkadeClient — real arkd round (@arkade-os/sdk)
 │   │   ├── clock.ts              # SystemClock
 │   │   ├── http-router.ts        # /v1 routes + error boundary + bearer auth
 │   │   └── cloudflare.ts         # Worker (fetch + scheduled) + DelegateRunner DO
 │   └── index.ts                  # re-exports the Worker default + DO
-└── test/                         # *.test.ts (Node built-in runner + type-stripping)
+└── test/                         # *.test.ts (unit) · integration/ (arkd-gated, pnpm test:e2e)
 ```
 
 ---

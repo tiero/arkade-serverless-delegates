@@ -120,3 +120,8 @@ the Workers runtime / a live arkd.
   `RestArkProvider` (health + idempotent registration); documented the SDK
   surface (DESIGN §8.2). **e2e renewal BLOCKED**: regtest Docker image blob CDNs
   return 403 under this environment's network policy (`docs/REGTEST.md`).
+- 2026-06-18: Docs consolidation. Made `README.md` the single front door
+  (overview, architecture, HTTP API, **Cloudflare deploy**, config, dev, status)
+  and reconciled drift: DESIGN stale header/§7 health/§10 deploy/§11 layout +
+  cron cadence (`*/5`) now match the code and `wrangler.jsonc`. Deep docs stay
+  single-homed and linked (DESIGN/PROGRESS/WORKFLOW/REGTEST), no duplication.
