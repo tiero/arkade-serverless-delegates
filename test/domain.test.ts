@@ -4,10 +4,13 @@ import assert from "node:assert/strict";
 import {
   DelegateTask,
   canTransition,
+  deriveExpireAt,
+  deriveValidAt,
   inputKey,
   parseFee,
   parseForfeitTxs,
   parseIntent,
+  resolveScheduledAt,
   type Input,
 } from "../src/domain/task.ts";
 import { InvariantError, ValidationError } from "../src/domain/errors.ts";
@@ -58,6 +61,52 @@ describe("value-object parsing (untrusted input -> ValidationError, never a cras
     assert.throws(() => parseFee(-1), ValidationError);
     assert.throws(() => parseFee(2_000_000), ValidationError);
     assert.throws(() => parseFee("250"), ValidationError);
+  });
+});
+
+describe("signed-intent timing (scheduledAt / expiresAt from the message)", () => {
+  // Canonical Arkade register-intent message: JSON with snake_case unix-secs
+  // (matches @arkade-os/sdk Intent.encodeMessage; see docs/DESIGN.md §2.1, §3).
+  const registerMsg = JSON.stringify({
+    type: "register",
+    onchain_output_indexes: [0],
+    valid_at: 1_900_000_000,
+    expire_at: 1_950_000_000,
+    cosigners_public_keys: ["02ab"],
+  });
+
+  it("decodes valid_at / expire_at from the canonical message", () => {
+    assert.equal(deriveValidAt(registerMsg), 1_900_000_000);
+    assert.equal(deriveExpireAt(registerMsg), 1_950_000_000);
+  });
+
+  it("returns null for an opaque (non-JSON) message", () => {
+    assert.equal(deriveValidAt("not-json"), null);
+    assert.equal(deriveExpireAt("not-json"), null);
+  });
+
+  it("treats the signed valid_at as authoritative over a request-supplied scheduledAt", () => {
+    // Even with a (bogus) provided value, the decoded valid_at wins.
+    assert.equal(resolveScheduledAt(registerMsg, 12345, 1_000), 1_900_000_000);
+  });
+
+  it("falls back to the request scheduledAt only when the message is opaque", () => {
+    assert.equal(resolveScheduledAt("opaque", 1_900_000_000, 1_000), 1_900_000_000);
+    assert.throws(() => resolveScheduledAt("opaque", undefined, 1_000), ValidationError);
+  });
+
+  it("rejects a renewal time in the past", () => {
+    assert.throws(() => resolveScheduledAt(registerMsg, undefined, 1_900_000_001), ValidationError);
+  });
+
+  it("DelegateTask.create captures expiresAt from the signed message", () => {
+    const intent = parseIntent({ ...makeIntentRaw(), message: registerMsg });
+    const task = DelegateTask.create(
+      { tenantId: "t_a", intent, forfeitTxs: [], fee: 0, delegatePublicKey: "02abc", scheduledAt: 1_900_000_000 },
+      1_000,
+    );
+    assert.equal(task.expiresAt, 1_950_000_000);
+    assert.equal(task.toState().expiresAt, 1_950_000_000);
   });
 });
 

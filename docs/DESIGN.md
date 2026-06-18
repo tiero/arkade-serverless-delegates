@@ -310,9 +310,12 @@ fee, ensure `validAt` is in the future and before the inputs' expiry.
 
 1. **Workers runtime compatibility of the SDK.** `@arkade-os/sdk` pulls in
    Bitcoin crypto libs. They run in browsers, so they should run in `workerd`
-   with `compatibility_flags: ["nodejs_compat"]` — **must be validated first**
-   (Phase 2 spike: import SDK + do a no-op `RestArkProvider` call in
-   `wrangler dev`).
+   with `compatibility_flags: ["nodejs_compat"]`.
+   *Partially resolved (Phase 2 spike):* `@arkade-os/sdk@0.4.37` **imports and
+   instantiates cleanly under Node 22** (`RestArkProvider`/`Intent`/`SingleKey`
+   construct; 135 exports). The transport is REST + SSE over `fetch`, which is
+   why no container is needed (§6). The final `wrangler dev`/`workerd`
+   confirmation is deferred to a deploy with the regtest stack (BLOCKED here).
 2. **Settlement-round duration vs DO budget.** A round (register → tree sign →
    finalize over SSE) can take tens of seconds. Durable Objects are the right
    home (they can await I/O across subrequests), but we must measure against
@@ -321,8 +324,15 @@ fee, ensure `validAt` is in the future and before the inputs' expiry.
 3. **SSE longevity in a DO.** Need to confirm an SSE stream held open inside a
    DO invocation survives a full round; otherwise poll the indexer instead.
 4. **Does the SDK expose the raw MuSig2 round, or a one-call delegator helper?**
-   The README hints at a built-in delegator. If a high-level helper exists, the
-   DelegateRunner shrinks dramatically. Spike in Phase 2.
+   *Resolved (Phase 2/3 spike).* The SDK's `DelegateProvider`/`RestDelegateProvider`
+   + `DelegateManagerImpl` are the **client/wallet** side — they build the signed
+   `SignedIntent<RegisterMessage>` + forfeit txs and hand them to a delegate
+   *service* (Fulmine, or **us**). There is **no server-side one-call helper**:
+   the delegate's round is composed from `RestArkProvider` low-level primitives
+   (`registerIntent` → `confirmRegistration` → `getEventStream` → `submitTreeNonces`
+   / `submitTreeSignatures` → `submitSignedForfeitTxs`) plus `Identity.signerSession()`
+   for MuSig2 — i.e. we reimplement Fulmine's round (§2.2). The DelegateRunner does
+   **not** shrink. See §8.2.
 5. **R2 has no transactions.** Input-overlap guard and status indexes need a
    serialization strategy (per-tenant DO) for strict correctness.
 6. **Delegate key custody.** The operator's signing key is a Worker Secret.
@@ -366,6 +376,44 @@ strongest:
    must be deduped by intent `txid` (as Fulmine does via its registered-intents
    map), so even a double-submit cannot double-renew. The cross-task **overlap
    guard** (§5) already stops two *different* tasks from racing on the same VTXOs.
+
+## 8.2 SDK surface & the server-side round (Phase 2/3 spike findings)
+
+Verified against `@arkade-os/sdk@0.4.37` (TypeDoc + the bundled `.d.ts`):
+
+- **Intent message is canonical JSON.** `Intent.encodeMessage` produces
+  `{"type":"register","onchain_output_indexes":[…],"valid_at":<unix s>,"expire_at":<unix s>,"cosigners_public_keys":[…]}`.
+  So our stored `intent.message` is decodable with `JSON.parse` (no SDK needed in
+  the pure domain): `scheduledAt` now derives from the signed `valid_at`
+  (authoritative), and we persist `expiresAt` from `expire_at` (sets up the
+  near-expiry escalation, §8.1). Request-supplied `scheduledAt` is only a
+  fallback for an opaque message.
+- **`SignedIntent<RegisterMessage> = { proof, message }`** — `proof` is the
+  base64 signed proof tx; `message` is the object above. `RestArkadeClient`
+  reconstructs this from our stored strings and forwards the proof **verbatim**
+  (custody invariant — we never re-sign the user's ownership proof).
+- **The delegate co-signs with its OWN key** via the delegate tapscript path
+  (`DelegateVtxo.Script`); its pubkey is listed in `cosigners_public_keys`. The
+  operator key is a Worker Secret (`DELEGATE_PRIVATE_KEY`), used only to co-sign
+  the tree — never to hold or move user funds.
+- **Round primitives** (`ArkProvider`/`RestArkProvider`): `registerIntent →
+  confirmRegistration → getEventStream(topics)` yielding the `SettlementEvent`
+  union (`BatchStarted`, `TreeTx`, `TreeSigningStarted`, `TreeNonces`,
+  `BatchFinalization`, `BatchFinalized`, `BatchFailed`), with `submitTreeNonces`
+  / `submitTreeSignatures` / `submitSignedForfeitTxs`, and `Identity.signerSession()`
+  (`init`/`getNonces`/`aggregatedNonces`/`sign`) for MuSig2. **Idempotent
+  registration** (dedupe by signed proof) is implemented (§8.1 layer 3).
+
+**Status.** Implemented + verifiable: provider wiring, `health()` (getInfo),
+`SignedIntent` reconstruction, idempotent `registerIntent`. **Pending the
+Phase-3 exit criterion** (a real VTXO renewed end-to-end): `rideRound` — the one
+unverifiable-without-a-server piece is `SignerSession.init`'s `scriptRoot`
+(arkd's sweep tap-tree root) and `rootInputAmount` (batch shared-output amount),
+which the SDK derives inside its internal settlement handler. Rather than
+fabricate a commitment txid, `settleDelegatedIntent` registers (real) then throws
+`RoundNotVerifiedError` — a *liveness* fault, never a *safety* one. **BLOCKED in
+this environment**: the regtest stack needs Docker images whose blob CDNs the
+network policy returns `403` for (`docs/REGTEST.md`, `docs/PROGRESS.md`).
 
 ---
 

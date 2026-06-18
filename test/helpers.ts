@@ -31,6 +31,7 @@ export function makeState(over: Partial<DelegateTaskState> = {}): DelegateTaskSt
     fee: over.fee ?? 250,
     delegatePublicKey: over.delegatePublicKey ?? "02abc",
     scheduledAt: over.scheduledAt ?? 1_000,
+    expiresAt: over.expiresAt ?? 0,
     status: over.status ?? "pending",
     failReason: over.failReason ?? "",
     commitmentTxid: over.commitmentTxid ?? "",

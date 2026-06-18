@@ -142,24 +142,38 @@ export function parseDelegatePublicKey(raw: unknown): string {
 }
 
 /**
- * Best-effort extraction of `validAt` from the (currently opaque) intent
- * message. Until the real Arkade message codec is wired (Phase 3) we accept a
- * JSON message carrying `{ "validAt": <unix secs> }`; otherwise null.
+ * The Arkade register-intent message is canonical JSON (verified against
+ * `@arkade-os/sdk` `Intent.encodeMessage`): `{ type: "register", valid_at,
+ * expire_at, ... }` with unix-seconds integers. We decode it here in the pure
+ * domain (just `JSON.parse` — no SDK dependency, so the unit loop stays
+ * dependency-light) and read the signed timings directly. `validAt`/`expireAt`
+ * (camelCase) are accepted as a fallback for hand-rolled fixtures.
  */
-export function deriveValidAt(message: string): number | null {
+function decodeIntentField(message: string, snake: string, camel: string): number | null {
   try {
-    const m = JSON.parse(message) as { validAt?: unknown };
-    if (m && Number.isFinite(m.validAt)) return Math.floor(m.validAt as number);
+    const m = JSON.parse(message) as Record<string, unknown>;
+    const raw = m?.[snake] ?? m?.[camel];
+    if (Number.isFinite(raw)) return Math.floor(raw as number);
   } catch {
-    /* opaque message — not yet decodable */
+    /* opaque / non-JSON message — not decodable */
   }
   return null;
 }
 
+/** Renewal time signed into the intent (`valid_at`), or null if not decodable. */
+export function deriveValidAt(message: string): number | null {
+  return decodeIntentField(message, "valid_at", "validAt");
+}
+
+/** Hard expiry signed into the intent (`expire_at`), or null if not decodable. */
+export function deriveExpireAt(message: string): number | null {
+  return decodeIntentField(message, "expire_at", "expireAt");
+}
+
 /**
- * Resolve the renewal time. The signed intent's `validAt` is authoritative when
- * present; the request-supplied `scheduledAt` is only a fallback until the codec
- * lands (docs/DESIGN.md §7, §8.1). Must be in the future.
+ * Resolve the renewal time. The signed intent's `valid_at` is authoritative
+ * when the message decodes; the request-supplied `scheduledAt` is only a
+ * fallback for opaque messages (docs/DESIGN.md §7, §8.1). Must be in the future.
  */
 export function resolveScheduledAt(message: string, providedRaw: unknown, nowSecs: number): number {
   const derived = deriveValidAt(message);
@@ -185,6 +199,8 @@ export interface DelegateTaskState {
   fee: number;
   delegatePublicKey: string;
   scheduledAt: number;
+  /** Hard VTXO expiry (unix secs) from the signed intent (`expire_at`); 0 if not decodable. Used by the near-expiry escalation (docs/DESIGN.md §8.1). */
+  expiresAt: number;
   status: DelegateStatus;
   failReason: string;
   commitmentTxid: string;
@@ -223,6 +239,7 @@ export class DelegateTask {
       fee: args.fee,
       delegatePublicKey: args.delegatePublicKey,
       scheduledAt: args.scheduledAt,
+      expiresAt: deriveExpireAt(args.intent.message) ?? 0,
       status: "pending",
       failReason: "",
       commitmentTxid: "",
@@ -251,6 +268,9 @@ export class DelegateTask {
   }
   get scheduledAt(): number {
     return this.state.scheduledAt;
+  }
+  get expiresAt(): number {
+    return this.state.expiresAt;
   }
   get attempts(): number {
     return this.state.attempts;

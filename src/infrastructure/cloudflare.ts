@@ -5,9 +5,11 @@
 // Not runtime-verified in this repo (needs `wrangler dev` / miniflare — Phase 4);
 // the testable logic lives in the pure use cases.
 
+import { SingleKey } from "@arkade-os/sdk";
+
 import { handleRequest, type RouterDeps } from "./http-router.ts";
 import { R2DelegateRepository } from "./r2-repository.ts";
-import { RestArkadeClient } from "./arkade-clients.ts";
+import { RestArkadeClient } from "./rest-arkade-client.ts";
 import { SystemClock } from "./clock.ts";
 import { sweepDelegates } from "../application/use-cases.ts";
 
@@ -17,6 +19,12 @@ export interface Env {
   ARKADE_SERVER_URL: string;
   /** JSON map of apiKey -> tenantId (set via `wrangler secret put API_KEYS`) */
   API_KEYS: string;
+  /**
+   * Delegate operator signing key (hex), a Worker Secret. Used ONLY to co-sign
+   * the renewal round via the delegate tapscript path — never to hold or move
+   * user funds (CLAUDE.md invariant #1). Absent in mock/dev deploys.
+   */
+  DELEGATE_PRIVATE_KEY?: string;
 }
 
 const clock = new SystemClock();
@@ -85,20 +93,20 @@ export default {
 export class DelegateRunner {
   private chain: Promise<unknown> = Promise.resolve();
   private env: Env;
+  // One client per DO instance so its idempotency map (DESIGN §8.1 layer 3)
+  // survives across sweeps for the tenant this DO serializes.
+  private arkade: RestArkadeClient;
 
   constructor(_state: DurableObjectState, env: Env) {
     this.env = env;
+    const identity = env.DELEGATE_PRIVATE_KEY ? SingleKey.fromHex(env.DELEGATE_PRIVATE_KEY) : undefined;
+    this.arkade = new RestArkadeClient(env.ARKADE_SERVER_URL, identity);
   }
 
   async fetch(request: Request): Promise<Response> {
     const { tenantId } = (await request.json()) as { tenantId: string };
     const summary = await this.serialize(() =>
-      sweepDelegates(
-        new R2DelegateRepository(this.env.DELEGATES),
-        new RestArkadeClient(this.env.ARKADE_SERVER_URL),
-        clock,
-        tenantId,
-      ),
+      sweepDelegates(new R2DelegateRepository(this.env.DELEGATES), this.arkade, clock, tenantId),
     );
     return new Response(JSON.stringify(summary), { headers: { "content-type": "application/json" } });
   }

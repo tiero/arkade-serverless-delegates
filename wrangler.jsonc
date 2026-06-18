@@ -18,6 +18,9 @@
   // Coarse backstop sweep; precise per-task timing comes from DO alarms (Phase 4).
   "triggers": { "crons": ["*/5 * * * *"] },
 
+  // Point at the regtest arkd for Phase 3: ARKADE_SERVER_URL=http://localhost:7070 (docs/REGTEST.md).
   "vars": { "ARKADE_SERVER_URL": "https://arkade.example.com" }
-  // Secret (not in config): `wrangler secret put API_KEYS`  (JSON apiKey->tenantId)
+  // Secrets (not in config), via `wrangler secret put`:
+  //   API_KEYS              JSON apiKey->tenantId
+  //   DELEGATE_PRIVATE_KEY  hex operator co-signing key (regtest/testnet only; never a user key)
 }

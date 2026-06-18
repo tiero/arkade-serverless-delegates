@@ -11,6 +11,7 @@
   "scripts": {
     "test": "node --test --experimental-strip-types --disable-warning=ExperimentalWarning \"test/*.test.ts\"",
     "test:watch": "node --test --watch --experimental-strip-types --disable-warning=ExperimentalWarning \"test/*.test.ts\"",
+    "test:e2e": "node --test --experimental-strip-types --disable-warning=ExperimentalWarning \"test/integration/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
@@ -19,5 +20,8 @@
     "@cloudflare/workers-types": "^4.20250101.0",
     "typescript": "^5.7.0",
     "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "@arkade-os/sdk": "^0.4.37"
   }
 }

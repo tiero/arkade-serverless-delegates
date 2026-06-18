@@ -7,7 +7,8 @@
 **End goal:** custody-free, multi-tenant Arkade delegate on Cloudflare
 (Workers + DO + R2 + Cron). See `docs/DESIGN.md`.
 
-**Current phase:** Phase 1 — Skeleton (contract pieces + component tests).
+**Current phase:** Phase 3 — Real settlement round (SDK wired; round verification
+BLOCKED on the regtest stack — see Phase 3 below).
 
 ## Phase 0 — Design
 - [x] `docs/DESIGN.md` written and approved
@@ -39,25 +40,45 @@ corrupt-record skip, decodeURIComponent/id-shape → 404, no same-tick re-dispat
 of recovered tasks, fee-as-integer, status allow-list, API_KEYS parsed once,
 `allSettled` fan-out, stale `failReason` cleared on recover, `structuredClone`.
 
-**Phase 1 is complete. Settlement (`RestArkadeClient`) is the one remaining seam,
-BLOCKED on a live arkd — see Phase 3.**
+**Phase 1 is complete.** The settlement seam is now wired to the real SDK (Phase
+3 below); the full round's end-to-end verification is the one BLOCKED step.
 
-Deferred from the review (need arkd/codec or runtime, not faked here):
-`scheduledAt` is still request-supplied (derived from the signed `validAt` only
-when the message is decodable — full derivation is Phase 3); DO serialization is
-not runtime-verified (Phase 4).
+Deferred-review items, updated:
+- `scheduledAt` now derives from the **signed** intent `valid_at` (authoritative
+  when the message decodes; request value is only a fallback for opaque
+  messages). `expiresAt` is captured from `expire_at`. ✅ closed (53 unit tests).
+- DO serialization is still not runtime-verified (Phase 4).
 
-## Phase 2 — SDK spike (go/no-go)  ← likely BLOCKED here
-- [ ] [BLOCKED] Validate `@arkade-os/sdk` imports + runs under `workerd`
-      (`nodejs_compat`). *Needs:* npm install of the SDK (network) and a
-      `wrangler dev` run.
-- [ ] [BLOCKED] Decide raw MuSig2 round vs. SDK delegator helper; measure round
-      duration vs DO budget. *Needs:* the SDK + a reachable `arkd`/regtest.
+## Phase 2 — SDK spike (go/no-go)
+- [x] `@arkade-os/sdk@0.4.37` installed and **imports + instantiates under Node 22**
+      (`RestArkProvider`/`Intent`/`SingleKey`; 135 exports). `wrangler dev`/workerd
+      confirmation deferred to a regtest deploy (DESIGN §8 Q1).
+- [x] Decided: **no server-side delegator helper** — the SDK's
+      `DelegateProvider`/`DelegateManagerImpl` are the wallet/client side; the
+      delegate round is composed from `RestArkProvider` primitives + `signerSession()`
+      (we reimplement Fulmine's round). DESIGN §8 Q4 / §8.2. **Go** on pure Workers.
 
 ## Phase 3 — Real settlement round
-- [ ] [BLOCKED] `RestArkadeClient` against `arkd` on the regtest stack; derive
-      `scheduledAt` from the decoded signed intent `validAt`. *Needs:* the
-      Arkade regtest stack + outbound network.
+- [x] `scheduledAt`/`expiresAt` derived from the signed intent message (canonical
+      JSON `valid_at`/`expire_at`; DESIGN §8.2). Pure domain, unit-tested.
+- [x] `RestArkadeClient` wired to `@arkade-os/sdk` `RestArkProvider`
+      (`src/infrastructure/rest-arkade-client.ts`): `health()` (getInfo),
+      `SignedIntent` reconstruction from stored strings, **idempotent
+      `registerIntent`** (dedupe by signed proof — DESIGN §8.1 layer 3). Worker/DO
+      wired with the `DELEGATE_PRIVATE_KEY` operator key.
+- [x] arkd-gated integration suite (`test/integration/round.test.ts`, `pnpm test:e2e`)
+      + `docs/REGTEST.md` (how to run `arklabsHQ/arkade-regtest` and point the
+      delegate at it). Reachability-gated: skips when arkd is absent.
+- [ ] [BLOCKED] **Phase-3 exit criterion: a real VTXO renewed end-to-end on
+      regtest.** Needs `RestArkadeClient.rideRound` (MuSig2 round — `SignerSession.init`'s
+      `scriptRoot`/`rootInputAmount` derivation must be verified live) AND the
+      wallet-side hand-off. `settleDelegatedIntent` registers (real) then throws
+      `RoundNotVerifiedError` rather than fake success.
+      *Needs:* the regtest Docker stack — **unavailable here**: the registry APIs
+      are reachable but the image blob CDNs (`production.cloudfront.docker.com`,
+      `pkg-containers.githubusercontent.com`) return `403` under this environment's
+      network policy, so the images can't be pulled. Run on a host with registry
+      egress (`docs/REGTEST.md`).
 
 ## Phase 4 — Hardening
 - [ ] DO alarms for precise per-task scheduling (backstop: the cron sweep).
@@ -80,3 +101,10 @@ not runtime-verified (Phase 4).
   with a `Clock` port + injectable repositories so cron/time are testable. The
   refactor folded in the `/code-review` findings (auth bypass, malformed-input
   500s, R2 truncation, double-dispatch window, etc.).
+- 2026-06-18: Phase 2/3. Added `@arkade-os/sdk` (a runtime **dependency**, used
+  only in `rest-arkade-client.ts`; the unit loop stays SDK-free — `pnpm test`
+  globs `test/*.test.ts`, the SDK-backed suite is `test/integration/` via
+  `pnpm test:e2e`). Decoded the signed intent timings; wired the real
+  `RestArkProvider` (health + idempotent registration); documented the SDK
+  surface (DESIGN §8.2). **e2e renewal BLOCKED**: regtest Docker image blob CDNs
+  return 403 under this environment's network policy (`docs/REGTEST.md`).
