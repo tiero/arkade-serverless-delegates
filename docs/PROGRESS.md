@@ -120,6 +120,14 @@ the Workers runtime / a live arkd.
   `RestArkProvider` (health + idempotent registration); documented the SDK
   surface (DESIGN §8.2). **e2e renewal BLOCKED**: regtest Docker image blob CDNs
   return 403 under this environment's network policy (`docs/REGTEST.md`).
+- 2026-06-18: `/code-review` (xhigh) fixes. (1) The overlap lock now truly holds
+  across isolates: the Worker routes `POST /v1/delegates` through the per-tenant
+  DelegateRunner DO (creates were previously unserialized in the fetch isolate).
+  (2) The sweep no longer resurrects a `failed` task past hard expiry (it would
+  oscillate failed↔pending forever). (3) `RestArkadeClient.register` caches the
+  intent id before `confirmRegistration` (a confirm failure no longer
+  re-registers). (4) `DelegateTask.create` rejects `expire_at <= valid_at`, and
+  `fromState` back-fills `expiresAt` for pre-field records. 63 unit tests.
 - 2026-06-18: Docs consolidation. Made `README.md` the single front door
   (overview, architecture, HTTP API, **Cloudflare deploy**, config, dev, status)
   and reconciled drift: DESIGN stale header/§7 health/§10 deploy/§11 layout +

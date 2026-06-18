@@ -11,10 +11,11 @@ import {
   parseForfeitTxs,
   parseIntent,
   resolveScheduledAt,
+  type DelegateTaskState,
   type Input,
 } from "../src/domain/task.ts";
 import { InvariantError, ValidationError } from "../src/domain/errors.ts";
-import { makeIntentRaw } from "./helpers.ts";
+import { makeIntentRaw, makeState } from "./helpers.ts";
 
 describe("status transitions", () => {
   it("allows only sanctioned transitions", () => {
@@ -107,6 +108,30 @@ describe("signed-intent timing (scheduledAt / expiresAt from the message)", () =
     );
     assert.equal(task.expiresAt, 1_950_000_000);
     assert.equal(task.toState().expiresAt, 1_950_000_000);
+  });
+
+  it("rejects an intent whose expire_at is not strictly after valid_at", () => {
+    const notAfter = JSON.stringify({ type: "register", valid_at: 1_900_000_000, expire_at: 1_900_000_000 });
+    const before = JSON.stringify({ type: "register", valid_at: 1_900_000_000, expire_at: 1_800_000_000 });
+    for (const message of [notAfter, before]) {
+      const intent = parseIntent({ ...makeIntentRaw(), message });
+      assert.throws(
+        () =>
+          DelegateTask.create(
+            { tenantId: "t_a", intent, forfeitTxs: [], fee: 0, delegatePublicKey: "02abc", scheduledAt: 1_900_000_000 },
+            1_000,
+          ),
+        ValidationError,
+      );
+    }
+  });
+
+  it("fromState back-fills expiresAt for a record persisted before the field existed", () => {
+    const intent = parseIntent({ ...makeIntentRaw(), message: registerMsg });
+    const legacy = makeState({ intent });
+    delete (legacy as Partial<DelegateTaskState>).expiresAt; // simulate a pre-field record
+    const task = DelegateTask.fromState(legacy as DelegateTaskState);
+    assert.equal(task.expiresAt, 1_950_000_000);
   });
 });
 

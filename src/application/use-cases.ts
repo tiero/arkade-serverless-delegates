@@ -211,6 +211,10 @@ export async function sweepDelegates(
 
   for (const s of snapshot) {
     if (expiredIds.has(s.id)) continue;
+    // Never resurrect a task past hard expiry: renewal is futile (the VTXO is
+    // swept), and recover() doesn't bump attempts, so recovering it would just
+    // oscillate failed<->pending every sweep forever. Leave it terminal.
+    if (pastExpiry(s)) continue;
     const inFlightStuck =
       (s.status === "registering" || s.status === "in_round") && s.updatedAt <= now - stuckTimeoutSecs;
     const retryable = s.status === "failed";

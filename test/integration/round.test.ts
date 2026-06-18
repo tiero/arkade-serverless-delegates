@@ -11,7 +11,16 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { Intent } from "@arkade-os/sdk";
+import type { ArkProvider } from "@arkade-os/sdk";
 import { RestArkadeClient } from "../../src/infrastructure/rest-arkade-client.ts";
+
+const REGISTER_MSG = Intent.encodeMessage({
+  type: "register",
+  onchain_output_indexes: [0],
+  valid_at: 1_900_000_000,
+  expire_at: 1_950_000_000,
+  cosigners_public_keys: ["02ab"],
+});
 
 const ARKADE_SERVER_URL = process.env.ARKADE_SERVER_URL ?? "http://localhost:7070";
 
@@ -41,6 +50,35 @@ describe("RestArkadeClient (arkd integration)", () => {
     assert.equal(signed.proof, "base64proof");
     assert.equal(signed.message.type, "register");
     assert.equal(signed.message.valid_at, 1_900_000_000);
+  });
+
+  it("register() caches the intent before confirm, so a confirm failure never re-registers (no arkd)", async () => {
+    let registerCalls = 0;
+    let confirmCalls = 0;
+    let failNextConfirm = true;
+    const fake = {
+      async registerIntent() {
+        registerCalls += 1;
+        return "intent_1";
+      },
+      async confirmRegistration() {
+        confirmCalls += 1;
+        if (failNextConfirm) {
+          failNextConfirm = false;
+          throw new Error("confirm blip");
+        }
+      },
+    } as unknown as ArkProvider;
+
+    const client = new RestArkadeClient("http://unused", undefined, fake);
+    const req = { intentMessage: REGISTER_MSG, intentProof: "proof-1", forfeitTxs: [] };
+
+    await assert.rejects(() => client.register(req), /confirm blip/); // register ok, confirm throws
+    const id = await client.register(req); // retry
+
+    assert.equal(id, "intent_1");
+    assert.equal(registerCalls, 1, "registered exactly once across the retry");
+    assert.equal(confirmCalls, 2, "re-confirmed on the retry");
   });
 
   it("reaches a regtest arkd via getInfo()", async (t) => {

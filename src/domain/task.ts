@@ -231,6 +231,14 @@ export class DelegateTask {
   }
 
   static create(args: NewDelegateArgs, nowSecs: number): DelegateTask {
+    // `expiresAt` is 0 when the message carries no decodable `expire_at`
+    // (escalation simply can't run toward an unknown deadline). When it IS
+    // known it must be after the renewal time, else the task would be created
+    // only to be hard-failed on the next sweep — reject the ambiguous hand-off.
+    const expiresAt = deriveExpireAt(args.intent.message) ?? 0;
+    if (expiresAt > 0 && expiresAt <= args.scheduledAt) {
+      throw new ValidationError("intent expire_at must be after valid_at");
+    }
     return new DelegateTask({
       id: newDelegateId(),
       tenantId: args.tenantId,
@@ -239,7 +247,7 @@ export class DelegateTask {
       fee: args.fee,
       delegatePublicKey: args.delegatePublicKey,
       scheduledAt: args.scheduledAt,
-      expiresAt: deriveExpireAt(args.intent.message) ?? 0,
+      expiresAt,
       status: "pending",
       failReason: "",
       commitmentTxid: "",
@@ -250,7 +258,14 @@ export class DelegateTask {
   }
 
   static fromState(state: DelegateTaskState): DelegateTask {
-    return new DelegateTask(structuredClone(state));
+    const cloned = structuredClone(state);
+    // Back-fill expiresAt for records persisted before the field existed: it's
+    // derivable from the (immutable) signed message, so old tasks get
+    // escalation / hard-expiry handling without a migration.
+    if (typeof cloned.expiresAt !== "number") {
+      cloned.expiresAt = deriveExpireAt(cloned.intent.message) ?? 0;
+    }
+    return new DelegateTask(cloned);
   }
 
   toState(): DelegateTaskState {

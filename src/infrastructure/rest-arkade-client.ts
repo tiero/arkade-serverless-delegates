@@ -28,6 +28,7 @@
 import { RestArkProvider, SettlementEventType, TxTree } from "@arkade-os/sdk";
 import type {
   ArkInfo,
+  ArkProvider,
   Identity,
   Intent,
   SignedIntent,
@@ -62,14 +63,18 @@ export class RoundNotVerifiedError extends Error {
 
 export class RestArkadeClient implements ArkadeClient {
   readonly serverUrl: string;
-  private readonly provider: RestArkProvider;
+  private readonly provider: ArkProvider;
   private readonly identity: Identity | undefined;
   /** Idempotency map (DESIGN §8.1 layer 3): signed-proof -> arkd intentId. */
   private readonly registeredIntents = new Map<string, string>();
+  /** Intent ids already confirmed, so a retry re-confirms at most once. */
+  private readonly confirmedIntents = new Set<string>();
 
-  constructor(serverUrl: string, identity?: Identity) {
+  // `provider` is injectable for tests; production passes none and gets a real
+  // RestArkProvider against serverUrl.
+  constructor(serverUrl: string, identity?: Identity, provider?: ArkProvider) {
     this.serverUrl = serverUrl;
-    this.provider = new RestArkProvider(serverUrl);
+    this.provider = provider ?? new RestArkProvider(serverUrl);
     this.identity = identity;
   }
 
@@ -107,12 +112,19 @@ export class RestArkadeClient implements ArkadeClient {
    * a double-dispatch (cron + alarm) cannot double-register (DESIGN §8.1).
    */
   async register(req: SettleRequest): Promise<string> {
-    const cached = this.registeredIntents.get(req.intentProof);
-    if (cached) return cached;
-    const intent = this.reconstructSignedIntent(req);
-    const intentId = await this.provider.registerIntent(intent);
-    await this.provider.confirmRegistration(intentId);
-    this.registeredIntents.set(req.intentProof, intentId);
+    let intentId = this.registeredIntents.get(req.intentProof);
+    if (intentId === undefined) {
+      const intent = this.reconstructSignedIntent(req);
+      intentId = await this.provider.registerIntent(intent);
+      // Cache BEFORE confirmRegistration: the intent is now registered with arkd,
+      // so if confirm throws, the retry must re-confirm — never re-register
+      // (which would double-register the same intent, defeating §8.1 layer 3).
+      this.registeredIntents.set(req.intentProof, intentId);
+    }
+    if (!this.confirmedIntents.has(intentId)) {
+      await this.provider.confirmRegistration(intentId);
+      this.confirmedIntents.add(intentId);
+    }
     return intentId;
   }
 

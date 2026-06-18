@@ -252,6 +252,20 @@ describe("sweepDelegates — near-expiry escalation (DESIGN §8.1)", () => {
     assert.equal(summary.recovered, 0);
   });
 
+  it("does NOT resurrect a failed task past hard expiry (no failed↔pending oscillation)", async () => {
+    const repo = new InMemoryDelegateRepository();
+    // failed, past expiry, attempts below the cap: the old recover loop would
+    // reset it to pending (recover doesn't bump attempts), then loop 0 would
+    // re-fail it next sweep, forever.
+    await repo.save(
+      makeState({ id: "dead", tenantId: "t_a", status: "failed", attempts: 1, scheduledAt: 1, expiresAt: 9_000 }),
+    );
+    const summary = await sweepDelegates(repo, new MockArkadeClient(), new FixedClock(10_000), "t_a", { maxAttempts: 3 });
+    assert.equal(summary.recovered, 0, "not resurrected");
+    assert.equal(summary.gaveUp, 0);
+    assert.equal((await repo.load("t_a", "dead"))?.status, "failed"); // left terminal
+  });
+
   it("fails an active task whose VTXO hard-expired, instead of dispatching it", async () => {
     const repo = new InMemoryDelegateRepository();
     await repo.save(
