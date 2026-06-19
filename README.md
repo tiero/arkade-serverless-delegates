@@ -11,12 +11,14 @@ This is the serverless analogue of the delegate built into
 [Arkade TypeScript SDK](https://github.com/arkade-os/ts-sdk).
 
 > **Status (honest snapshot).** Skeleton + SDK spike done; the real arkd round is
-> wired but its **end-to-end renewal is not yet verified on regtest** (see
-> [Project status](#project-status)). A deployed instance today authenticates
-> tenants, validates/stores hand-offs, schedules them, and **registers** intents
-> with arkd — but the settlement round deliberately **refuses rather than fakes**
-> completion until verified. **Regtest / testnet only — never mainnet or real
-> funds.** Live state: [`docs/PROGRESS.md`](docs/PROGRESS.md).
+> **implemented** — `RestArkadeClient.rideRound` drives the SDK's `Batch.join`
+> MuSig2 orchestrator with a delegate co-signing handler — but its **end-to-end
+> renewal is not yet verified on regtest** (see [Project status](#project-status)).
+> A deployed instance today authenticates tenants, validates/stores hand-offs,
+> schedules them, **registers** intents with arkd, and rides the settlement round
+> to a real commitment txid (never a fabricated one — an unreachable/failed round
+> throws). **Regtest / testnet only — never mainnet or real funds.** Live state:
+> [`docs/PROGRESS.md`](docs/PROGRESS.md).
 
 ## Contents
 
@@ -228,10 +230,12 @@ Live checklist: [`docs/PROGRESS.md`](docs/PROGRESS.md).
 - ✅ **SDK spike** — `@arkade-os/sdk` imports/runs; the delegate round is composed
   from `RestArkProvider` primitives (no server-side helper exists).
 - 🟡 **Real round** — `RestArkadeClient` does health, `SignedIntent` reconstruction,
-  and idempotent `registerIntent` for real; the MuSig2 round is fully structured
-  but its final step (`SignerSession.init`'s `scriptRoot`/`rootInputAmount`) needs
-  a reachable `arkd` to verify. It throws `RoundNotVerifiedError` rather than fake
-  a result.
+  and idempotent `registerIntent` for real; the MuSig2 round is **implemented** on
+  the SDK's `Batch.join` orchestrator (`DelegateBatchHandler` co-signs the tree
+  with the delegate key, derives the sweep tap-tree root + `rootInputAmount` by
+  construction, forwards the user's pre-signed forfeits). It returns a real
+  commitment txid; an unreachable/failed round throws rather than faking success.
+  End-to-end renewal still needs a reachable `arkd` (regtest) to verify.
 - 🟡 **Hardening** — done: idempotent registration, persisted hard expiry +
   near-expiry escalation, strict (atomic) input-overlap lock. Pending: DO alarms,
   miniflare runtime verification, status indexes, per-tenant quotas, observability.

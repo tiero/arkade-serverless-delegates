@@ -7,11 +7,13 @@ The delegate talks to **arkd** over REST + SSE at `http://localhost:7070`
 (DESIGN §3, §6), via `@arkade-os/sdk`'s `RestArkProvider`.
 
 > **Environment note.** This stack needs to **pull Docker images** from Docker
-> Hub and `ghcr.io`. In the Claude Code web/CI sandbox that is currently
-> **blocked** — the registry APIs are reachable but the image **blob CDNs**
+> Hub and `ghcr.io`. The Docker **daemon does run** in the Claude Code web/CI
+> sandbox (`dockerd`), but image pulls are still gated: Docker Hub rate-limits
+> unauthenticated pulls, and the image **blob CDNs**
 > (`production.cloudfront.docker.com`, `pkg-containers.githubusercontent.com`)
-> return `403`, so the stack can't come up there. Run this on a host with normal
-> outbound network (a laptop, or CI with registry egress). See
+> return `403` on the default network path — so the stack can't come up there
+> unattended. Run this on a host with normal outbound network (a laptop, or CI
+> with registry egress), or `docker login` for an authenticated pull. See
 > `docs/PROGRESS.md` Phase 3 for the BLOCKED marker.
 
 ## 1. Start the stack
@@ -63,8 +65,15 @@ wrangler secret put DELEGATE_PRIVATE_KEY    # hex; regtest/testnet only
 - **Verified (with the stack up):** SDK imports + runs (Phase-2 spike), arkd
   reachability via `getInfo()`, `SignedIntent` reconstruction, idempotent
   `registerIntent`.
-- **Pending (Phase-3 exit criterion):** a real VTXO renewed end-to-end — the
-  MuSig2 batch round (`RestArkadeClient.rideRound`) plus the wallet-side
-  hand-off that produces the signed intent + forfeit txs. See DESIGN §2.2 / §8.2
-  and the skipped placeholder in the integration suite.
+- **Implemented (correct-by-construction, awaiting live verification):** the
+  MuSig2 batch round — `RestArkadeClient.rideRound` drives the SDK's `Batch.join`
+  with a delegate `Batch.Handler` (sweep tap-tree root from `batchExpiry` + arkd
+  forfeit key; `rootInputAmount` from commitment output 0; tree co-signed with
+  the delegate key; user forfeits forwarded). Resolves to the real commitment
+  txid. See DESIGN §8.2.
+- **Pending (Phase-3 exit criterion):** a real VTXO renewed end-to-end — needs
+  the wallet-side hand-off that produces a delegate VTXO + signed intent +
+  pre-signed forfeit txs, plus confirming whether arkd requires connector inputs
+  on each forfeit (DESIGN §2.2 step 3). See the skipped placeholder in the
+  integration suite.
 ```

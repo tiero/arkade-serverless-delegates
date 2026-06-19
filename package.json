@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@arkade-os/sdk": "^0.4.37",
-    "@scure/base": "^2.2.0"
+    "@scure/base": "^2.2.0",
+    "@scure/btc-signer": "2.0.1"
   }
 }

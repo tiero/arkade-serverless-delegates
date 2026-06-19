@@ -7,8 +7,9 @@
 **End goal:** custody-free, multi-tenant Arkade delegate on Cloudflare
 (Workers + DO + R2 + Cron). See `docs/DESIGN.md`.
 
-**Current phase:** Phase 3 — Real settlement round (SDK wired; round verification
-BLOCKED on the regtest stack — see Phase 3 below).
+**Current phase:** Phase 3 — Real settlement round (SDK wired; MuSig2 round
+implemented via the SDK's `Batch.join`; end-to-end regtest verification BLOCKED
+on bringing up the stack — see Phase 3 below).
 
 ## Phase 0 — Design
 - [x] `docs/DESIGN.md` written and approved
@@ -69,16 +70,28 @@ Deferred-review items, updated:
 - [x] arkd-gated integration suite (`test/integration/round.test.ts`, `pnpm test:e2e`)
       + `docs/REGTEST.md` (how to run `arklabsHQ/arkade-regtest` and point the
       delegate at it). Reachability-gated: skips when arkd is absent.
+- [x] `RestArkadeClient.rideRound` — the MuSig2 batch round, implemented on the
+      SDK's **reusable `Batch.join`** state machine + a delegate `Batch.Handler`
+      (`DelegateBatchHandler`). Derives the previously-unverifiable
+      `SignerSession.init` inputs by construction: `scriptRoot` = tap-leaf hash of
+      the CSV-multisig sweep script built from `BatchStartedEvent.batchExpiry` +
+      arkd's forfeit key (x-only); `rootInputAmount` = output 0 of the unsigned
+      commitment tx. Co-signs the tree with the delegate's own key; forwards the
+      user's pre-signed forfeits. Resolves to the **real** commitment txid (no
+      fabrication — a failed/unreachable round throws). `RoundNotVerifiedError`
+      removed. Added `@scure/btc-signer` as a direct dep for `tapLeafHash`
+      (CLAUDE.md crypto rule; pnpm won't hoist the transitive copy).
 - [ ] [BLOCKED] **Phase-3 exit criterion: a real VTXO renewed end-to-end on
-      regtest.** Needs `RestArkadeClient.rideRound` (MuSig2 round — `SignerSession.init`'s
-      `scriptRoot`/`rootInputAmount` derivation must be verified live) AND the
-      wallet-side hand-off. `settleDelegatedIntent` registers (real) then throws
-      `RoundNotVerifiedError` rather than fake success.
-      *Needs:* the regtest Docker stack — **unavailable here**: the registry APIs
-      are reachable but the image blob CDNs (`production.cloudfront.docker.com`,
-      `pkg-containers.githubusercontent.com`) return `403` under this environment's
-      network policy, so the images can't be pulled. Run on a host with registry
-      egress (`docs/REGTEST.md`).
+      regtest.** The round code is complete; what remains is (a) the wallet-side
+      hand-off harness that creates a real delegate VTXO + signed intent +
+      pre-signed forfeits, and (b) confirming whether arkd needs each forfeit to
+      carry its connector input before submission (DESIGN §2.2 step 3).
+      *Needs:* the regtest Docker stack. The Docker daemon **does run** in this
+      sandbox now (`dockerd`), but Docker Hub rate-limits unauthenticated image
+      pulls and the blob CDNs (`production.cloudfront.docker.com`,
+      `pkg-containers.githubusercontent.com`) `403` on the default network path —
+      so the stack still can't come up here unattended. Run on a host with
+      registry egress or an authenticated pull (`docs/REGTEST.md`).
 
 ## Phase 4 — Hardening
 Underway. Verifiable (pure use-case) items land here; runtime-only ones wait on
@@ -128,6 +141,16 @@ the Workers runtime / a live arkd.
   intent id before `confirmRegistration` (a confirm failure no longer
   re-registers). (4) `DelegateTask.create` rejects `expire_at <= valid_at`, and
   `fromState` back-fills `expiresAt` for pre-field records. 63 unit tests.
+- 2026-06-19: Implemented the MuSig2 round (`RestArkadeClient.rideRound`) on the
+  SDK's exported **`Batch.join`** orchestrator + a delegate `Batch.Handler`
+  (`DelegateBatchHandler`). Removed the `RoundNotVerifiedError` stub /
+  `deriveSigningContext`: `scriptRoot` and `rootInputAmount` are now derived by
+  construction (sweep tap-leaf from `batchExpiry` + arkd forfeit x-only key;
+  commitment output 0), so `settleDelegatedIntent` returns a real commitment txid
+  rather than refusing. Added `@scure/btc-signer` (`tapLeafHash`) as a direct dep.
+  Unit loop unchanged (63 green, SDK-free); integration suite still skips when
+  arkd is absent. Verified the Docker daemon runs in-sandbox, but image pulls are
+  rate-limited/CDN-gated, so true e2e on regtest remains BLOCKED here.
 - 2026-06-18: Docs consolidation. Made `README.md` the single front door
   (overview, architecture, HTTP API, **Cloudflare deploy**, config, dev, status)
   and reconciled drift: DESIGN stale header/§7 health/§10 deploy/§11 layout +

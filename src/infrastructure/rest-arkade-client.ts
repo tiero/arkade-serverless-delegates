@@ -6,60 +6,47 @@
 // by the arkd-gated integration suite (`test/integration/*.test.ts`, run via
 // `pnpm test:e2e` against the regtest stack — docs/REGTEST.md).
 //
-// What is implemented and verifiable here (correct-by-construction + typechecked,
-// and live-checkable against a reachable arkd):
+// What this adapter does:
 //   - provider wiring + `health()` (server reachability via getInfo),
 //   - reconstruction of the SDK `SignedIntent<RegisterMessage>` from the stored
 //     encoded message/proof (our R2 record mirrors Fulmine's, DESIGN §2.1),
 //   - idempotent `registerIntent` — dedupe by the signed proof so a re-trigger
-//     cannot double-register the same intent (DESIGN §8.1, layer 3).
+//     cannot double-register the same intent (DESIGN §8.1, layer 3),
+//   - `rideRound` — the MuSig2 batch round, driven by the SDK's reusable
+//     `Batch.join` state machine + a delegate-specific `Batch.Handler`
+//     (DESIGN §2.2 step 3). The delegate co-signs the VTXO tree with its OWN
+//     key (listed in the intent's `cosigners_public_keys`) and forwards the
+//     user's pre-signed forfeit txs verbatim — it never signs, re-signs, or
+//     redirects user funds (CLAUDE.md invariant #1). `Batch.join` resolves to
+//     the real commitment txid; we never fabricate one (a failed/unreachable
+//     round throws — a liveness fault, never a safety one).
 //
-// What is NOT yet verified (the Phase-3 acceptance step, BLOCKED in this
-// environment because the regtest Docker images cannot be pulled — see
-// docs/PROGRESS.md): the MuSig2 batch round end-to-end. The full round is now
-// structured in `rideRound` (register -> stream events -> co-sign tree nonces +
-// signatures -> submit forfeits -> finalized), composed from real SDK
-// primitives and ready to verify. The single value it cannot derive without a
-// live arkd — `SignerSession.init`'s `scriptRoot` / `rootInputAmount` — is
-// isolated in `deriveSigningContext`, which throws `RoundNotVerifiedError`
-// rather than fabricate a commitment txid. Failing to renew is a liveness
-// fault; faking success would violate the custody contract (DESIGN §2.2, §8.2).
+// Remaining live-verification points (Phase-3 exit criterion, needs a running
+// regtest arkd — docs/REGTEST.md, docs/PROGRESS.md): an end-to-end VTXO renewal,
+// and whether arkd requires each forfeit tx to carry its connector input before
+// submission (DESIGN §2.2 step 3), which depends on the wallet-side hand-off
+// format that produces the pre-signed forfeits.
 
-import { RestArkProvider, SettlementEventType, TxTree } from "@arkade-os/sdk";
+import { Batch, CSVMultisigTapscript, RestArkProvider, Transaction } from "@arkade-os/sdk";
 import type {
   ArkInfo,
   ArkProvider,
+  BatchFinalizationEvent,
+  BatchStartedEvent,
   Identity,
   Intent,
   SignedIntent,
+  SignerSession,
+  TreeNoncesEvent,
   TreeSigningStartedEvent,
-  TxTreeNode,
+  TxTree,
 } from "@arkade-os/sdk";
-import { hex } from "@scure/base";
+import { base64, hex } from "@scure/base";
+import { tapLeafHash } from "@scure/btc-signer/payment.js";
 
 import type { ArkadeClient, SettleRequest, SettleResult } from "../application/ports.ts";
 
 type RegisterIntent = SignedIntent<Intent.RegisterMessage>;
-
-/**
- * Thrown when the verifiable steps (reconstruct + register) succeed but the
- * MuSig2 round cannot be completed because it has not been verified end-to-end
- * against a live arkd. Distinct from a config/validation error so callers can
- * tell "blocked, not broken" apart. Never returned as success.
- */
-export class RoundNotVerifiedError extends Error {
-  readonly intentId: string;
-  constructor(intentId: string) {
-    super(
-      "RestArkadeClient: intent registered with arkd, but the MuSig2 settlement " +
-        "round is not yet verified end-to-end (Phase 3 acceptance, BLOCKED here — " +
-        "regtest images unavailable; see docs/PROGRESS.md). Refusing to fabricate a " +
-        "commitment txid.",
-    );
-    this.name = "RoundNotVerifiedError";
-    this.intentId = intentId;
-  }
-}
 
 export class RestArkadeClient implements ArkadeClient {
   readonly serverUrl: string;
@@ -138,96 +125,154 @@ export class RestArkadeClient implements ArkadeClient {
     }
     // Real, verifiable: register the user's pre-signed intent with arkd.
     const intentId = await this.register(req);
-    // Then ride the batch round. Not yet verified end-to-end (see header).
+    // Then ride the batch round to a real commitment txid.
     return this.rideRound(intentId, req);
   }
 
   /**
    * Ride the MuSig2 batch round as the delegate cosigner, mirroring Fulmine
-   * (DESIGN §2.2), composed from `RestArkProvider`'s event stream + the delegate
-   * key's `SignerSession`. The full structure is here and ready to verify; the
-   * one value that cannot be derived correctly without a live arkd to test
-   * against is isolated in {@link deriveSigningContext} (see there).
-   *
-   * The delegate signs the tree with its OWN key (listed in the intent's
-   * `cosigners_public_keys`); the user's forfeit txs are forwarded as-signed.
-   * We never re-sign or redirect user funds (CLAUDE.md invariant #1).
+   * (DESIGN §2.2). The SDK's exported `Batch.join` drives the full state machine
+   * (accumulating the streamed tree-tx chunks, building the `TxTree`, applying
+   * the server's aggregated tree signatures, reconstructing the connector tree)
+   * and resolves to the commitment txid. We supply a {@link DelegateBatchHandler}
+   * that co-signs the tree with the delegate's OWN key and forwards the user's
+   * pre-signed forfeit txs — never re-signing or redirecting user funds
+   * (CLAUDE.md invariant #1).
    */
   private async rideRound(intentId: string, req: SettleRequest): Promise<SettleResult> {
     const identity = this.identity;
     if (!identity) throw new Error("RestArkadeClient: missing delegate signing identity");
 
+    // arkd's forfeit key (33-byte compressed hex) -> x-only (32 bytes). It is
+    // the single pubkey in the sweep tapscript that SignerSession.init tweaks the
+    // tree MuSig2 keys with, so it must match arkd's exactly (see the handler).
+    const info = await this.provider.getInfo();
+    if (!info.forfeitPubkey) {
+      throw new Error("RestArkadeClient: arkd getInfo() returned no forfeitPubkey");
+    }
+    const forfeitPubkey = hex.decode(info.forfeitPubkey).slice(1);
+
     const session = identity.signerSession();
-    const pubkey = hex.encode(await session.getPublicKey());
+    const handler = new DelegateBatchHandler(
+      session,
+      this.provider,
+      req.forfeitTxs.map((f) => f.forfeitTx),
+      forfeitPubkey,
+    );
+
     const controller = new AbortController();
-    const chunks: TxTreeNode[] = [];
-    let signed = false;
-
     try {
-      for await (const event of this.provider.getEventStream(controller.signal, [intentId])) {
-        switch (event.type) {
-          case SettlementEventType.BatchFailed:
-            throw new Error(`arkd batch failed: ${event.reason}`);
-
-          case SettlementEventType.TreeTx:
-            // VTXO-tree chunks streamed before signing starts; accumulate them.
-            chunks.push(event.chunk);
-            break;
-
-          case SettlementEventType.TreeSigningStarted: {
-            const tree = TxTree.create(chunks);
-            const { scriptRoot, rootInputAmount } = await this.deriveSigningContext(intentId, event, tree);
-            await session.init(tree, scriptRoot, rootInputAmount);
-            await this.provider.submitTreeNonces(event.id, pubkey, await session.getNonces());
-            break;
-          }
-
-          case SettlementEventType.TreeNonces: {
-            // Server-aggregated nonces; once complete, submit our partial sigs.
-            const { hasAllNonces } = await session.aggregatedNonces(event.txid, event.nonces);
-            if (hasAllNonces && !signed) {
-              signed = true;
-              await this.provider.submitTreeSignatures(event.id, pubkey, await session.sign());
-            }
-            break;
-          }
-
-          case SettlementEventType.BatchFinalization:
-            // Forfeit txs are already user-signed; submit them. (If arkd requires
-            // connector-input attachment first, that is the other live-verify
-            // point — DESIGN §2.2.)
-            await this.provider.submitSignedForfeitTxs(req.forfeitTxs.map((f) => f.forfeitTx));
-            break;
-
-          case SettlementEventType.BatchFinalized:
-            return { commitmentTxid: event.commitmentTxid };
-
-          default:
-            // BatchStarted / TreeSignature / StreamStarted: nothing to do.
-            break;
-        }
-      }
-      throw new Error("arkd event stream ended before the batch was finalized");
+      const stream = this.provider.getEventStream(controller.signal, [intentId]);
+      const commitmentTxid = await Batch.join(stream, handler, {
+        abortController: controller,
+        // We always co-sign the tree (the renewal has offchain outputs).
+        skipVtxoTreeSigning: false,
+      });
+      return { commitmentTxid };
     } finally {
       controller.abort();
     }
   }
+}
+
+/**
+ * The delegate's MuSig2 batch-round handler for `Batch.join` (DESIGN §2.2 step
+ * 3). It mirrors the SDK wallet's internal `createBatchHandler`, but for the
+ * no-custody delegate: it co-signs the VTXO tree with the delegate's OWN key
+ * and forwards the user's pre-signed forfeit txs verbatim. It NEVER signs,
+ * re-signs, or redirects user funds (CLAUDE.md invariant #1).
+ */
+class DelegateBatchHandler implements Batch.Handler {
+  private readonly session: SignerSession;
+  private readonly provider: ArkProvider;
+  /** User-pre-signed forfeit txs, forwarded as-is at finalization. */
+  private readonly forfeitTxs: string[];
+  /** arkd's forfeit key, x-only (32 bytes), for the single-leaf sweep tap tree. */
+  private readonly forfeitPubkey: Uint8Array;
+  /** arkd's sweep tap-tree root; captured at BatchStarted, consumed at TreeSigningStarted. */
+  private sweepTapTreeRoot: Uint8Array | undefined;
+
+  constructor(
+    session: SignerSession,
+    provider: ArkProvider,
+    forfeitTxs: string[],
+    forfeitPubkey: Uint8Array,
+  ) {
+    this.session = session;
+    this.provider = provider;
+    this.forfeitTxs = forfeitTxs;
+    this.forfeitPubkey = forfeitPubkey;
+  }
 
   /**
-   * The remaining live-verification point (Phase-3 exit criterion).
-   * `SignerSession.init` needs `scriptRoot` (arkd's sweep tap-tree root) and
-   * `rootInputAmount` (the batch shared-output amount). Both are server-specific:
-   * the SDK derives them inside its internal settlement handler from `ArkInfo`
-   * + the unsigned commitment tx. Reproducing them must be checked against a
-   * live arkd — BLOCKED here (regtest images unpullable; DESIGN §6, §8.2,
-   * docs/PROGRESS.md). We refuse rather than guess, so a run never fabricates a
-   * commitment txid (a liveness fault, never a safety one).
+   * Rebuild arkd's sweep tap-tree root from the batch's expiry timelock + the
+   * server forfeit key, exactly as the server does: a single CSV-multisig leaf
+   * `<batchExpiry> CSV DROP <multisig([forfeitPubkey])>`, hashed to a tap leaf.
+   * `SignerSession.init` tweaks the tree MuSig2 keys with this root, so it must
+   * match arkd's or our partial signatures are invalid.
    */
-  private async deriveSigningContext(
-    intentId: string,
-    _event: TreeSigningStartedEvent,
-    _tree: TxTree,
-  ): Promise<{ scriptRoot: Uint8Array; rootInputAmount: bigint }> {
-    throw new RoundNotVerifiedError(intentId);
+  async onBatchStarted(event: BatchStartedEvent): Promise<{ skip: boolean }> {
+    const sweepScript = CSVMultisigTapscript.encode({
+      timelock: {
+        value: event.batchExpiry,
+        type: event.batchExpiry >= 512n ? "seconds" : "blocks",
+      },
+      pubkeys: [this.forfeitPubkey],
+    }).script;
+    this.sweepTapTreeRoot = tapLeafHash(sweepScript);
+    return { skip: false };
+  }
+
+  /**
+   * Init the MuSig2 session against the reconstructed tree, then submit our
+   * public nonces. `rootInputAmount` is the batch shared-output amount = output
+   * 0 of the unsigned commitment tx carried in the event.
+   */
+  async onTreeSigningStarted(
+    event: TreeSigningStartedEvent,
+    vtxoTree: TxTree,
+  ): Promise<{ skip: boolean }> {
+    if (!this.sweepTapTreeRoot) {
+      throw new Error("RestArkadeClient: tree signing started before BatchStarted set the sweep root");
+    }
+    const commitmentTx = Transaction.fromPSBT(base64.decode(event.unsignedCommitmentTx));
+    const sharedOutput = commitmentTx.getOutput(0);
+    if (!sharedOutput?.amount) {
+      throw new Error("RestArkadeClient: batch shared output (commitment output 0) not found");
+    }
+    await this.session.init(vtxoTree, this.sweepTapTreeRoot, sharedOutput.amount);
+    const pubkey = hex.encode(await this.session.getPublicKey());
+    await this.provider.submitTreeNonces(event.id, pubkey, await this.session.getNonces());
+    return { skip: false };
+  }
+
+  /**
+   * Aggregate the round's nonces; once every tree node has one, produce our
+   * partial signatures and submit them. `Batch.join` applies the server's
+   * aggregated `tree_signature` events to the tree for us.
+   */
+  async onTreeNonces(event: TreeNoncesEvent): Promise<{ fullySigned: boolean }> {
+    const { hasAllNonces } = await this.session.aggregatedNonces(event.txid, event.nonces);
+    if (!hasAllNonces) return { fullySigned: false };
+    const pubkey = hex.encode(await this.session.getPublicKey());
+    await this.provider.submitTreeSignatures(event.id, pubkey, await this.session.sign());
+    return { fullySigned: true };
+  }
+
+  /**
+   * Submit the user's pre-signed forfeit txs. They renew the VTXO back to its
+   * owner (minus fee); we forward them untouched. NOTE: arkd may require each
+   * forfeit to carry its connector input (from `connectorTree`) before
+   * submission (DESIGN §2.2 step 3); that attachment depends on the wallet-side
+   * hand-off format and is the remaining live-verify point (docs/REGTEST.md).
+   */
+  async onBatchFinalization(
+    _event: BatchFinalizationEvent,
+    _vtxoTree?: TxTree,
+    _connectorTree?: TxTree,
+  ): Promise<void> {
+    if (this.forfeitTxs.length > 0) {
+      await this.provider.submitSignedForfeitTxs(this.forfeitTxs);
+    }
   }
 }

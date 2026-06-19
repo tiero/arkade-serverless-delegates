@@ -423,16 +423,24 @@ Verified against `@arkade-os/sdk@0.4.37` (TypeDoc + the bundled `.d.ts`):
   (`init`/`getNonces`/`aggregatedNonces`/`sign`) for MuSig2. **Idempotent
   registration** (dedupe by signed proof) is implemented (§8.1 layer 3).
 
-**Status.** Implemented + verifiable: provider wiring, `health()` (getInfo),
-`SignedIntent` reconstruction, idempotent `registerIntent`. **Pending the
-Phase-3 exit criterion** (a real VTXO renewed end-to-end): `rideRound` — the one
-unverifiable-without-a-server piece is `SignerSession.init`'s `scriptRoot`
-(arkd's sweep tap-tree root) and `rootInputAmount` (batch shared-output amount),
-which the SDK derives inside its internal settlement handler. Rather than
-fabricate a commitment txid, `settleDelegatedIntent` registers (real) then throws
-`RoundNotVerifiedError` — a *liveness* fault, never a *safety* one. **BLOCKED in
-this environment**: the regtest stack needs Docker images whose blob CDNs the
-network policy returns `403` for (`docs/REGTEST.md`, `docs/PROGRESS.md`).
+**Status.** Implemented: provider wiring, `health()` (getInfo), `SignedIntent`
+reconstruction, idempotent `registerIntent`, and the MuSig2 batch round.
+`rideRound` drives the SDK's **reusable `Batch.join` state machine** with a
+delegate-specific `Batch.Handler` that: rebuilds arkd's sweep tap-tree root from
+`BatchStartedEvent.batchExpiry` + the server forfeit key (x-only), derives
+`rootInputAmount` from output 0 of the unsigned commitment tx, co-signs the tree
+with the delegate's OWN key (`SignerSession` nonces + partial sigs), and forwards
+the user's pre-signed forfeits. `Batch.join` resolves to the **real** commitment
+txid — we never fabricate one (an unreachable or failed round throws: a
+*liveness* fault, never a *safety* one). `SignerSession.init`'s `scriptRoot` /
+`rootInputAmount` (previously the one unverifiable piece) are now derived as
+above. **Pending the Phase-3 exit criterion** (a real VTXO renewed end-to-end on
+regtest): live verification, and whether arkd requires each forfeit to carry its
+connector input before submission (§2.2 step 3) — that depends on the wallet-side
+hand-off format. **BLOCKED in this environment**: the Docker daemon runs in the
+sandbox, but Docker Hub rate-limits unauthenticated image pulls / the blob CDNs
+`403` on the default path; bring the regtest stack up on a host with registry
+egress or an authenticated pull (`docs/REGTEST.md`, `docs/PROGRESS.md`).
 
 ---
 
